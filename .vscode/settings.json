@@ -1,0 +1,16 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\bergamascot\\AppData\\Local\\anaconda3\\envs\\pixelmotion-livestock\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "terminal.integrated.defaultProfile.windows": "PowerShell (pixelmotion-livestock)",
+  "terminal.integrated.profiles.windows": {
+    "PowerShell (pixelmotion-livestock)": {
+      "source": "PowerShell",
+      "args": [
+        "-NoExit",
+        "-Command",
+        "conda activate pixelmotion-livestock"
+      ],
+      "icon": "terminal-powershell"
+    }
+  }
+}
