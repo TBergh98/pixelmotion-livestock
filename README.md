@@ -42,7 +42,7 @@ All tuneable parameters are in [config.yaml](config.yaml):
 - segment duration
 - frame sampling settings
 - motility parameters (difference threshold, blur kernel, active-frame threshold)
-- logging level
+- logging level and progress update interval
 
 Sampling is strict: configure **exactly one** of:
 

@@ -16,6 +16,13 @@ class FrameRecord:
     frame: object
 
 
+@dataclass(frozen=True)
+class VideoMetadata:
+    frame_count: int
+    fps: float
+    duration_seconds: float
+
+
 def discover_videos(input_config: InputConfig) -> list[Path]:
     source = input_config.path
     if not source.exists():
@@ -34,6 +41,20 @@ def discover_videos(input_config: InputConfig) -> list[Path]:
             candidates.append(path)
 
     return sorted(candidates)
+
+
+def get_video_metadata(video_path: Path) -> VideoMetadata:
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"Unable to open video file: {video_path}")
+
+    try:
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        duration_seconds = (frame_count / fps) if frame_count > 0 and fps > 0 else 0.0
+        return VideoMetadata(frame_count=frame_count, fps=fps, duration_seconds=duration_seconds)
+    finally:
+        capture.release()
 
 
 def iter_video_frames(video_path: Path) -> Iterator[FrameRecord]:

@@ -15,7 +15,7 @@ segmentation:
   segment_duration_seconds: 600
 
 sampling:
-  every_n_frames: 1
+  every_n_frames: 50
   every_n_seconds: null
 
 processing:
@@ -25,3 +25,4 @@ processing:
 
 logging:
   level: "INFO"
+  progress_update_seconds: 30

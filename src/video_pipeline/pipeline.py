@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from __future__ import annotations
+
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,7 +18,7 @@ from .processor import (
     summarize_running_stats,
     update_running_stats,
 )
-from .video_io import discover_videos, iter_video_frames
+from .video_io import discover_videos, get_video_metadata, iter_video_frames
 
 LOGGER = logging.getLogger(__name__)
 
@@ -84,6 +87,7 @@ def _flush_segment(
 
 def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> dict[str, Any]:
     output_file.parent.mkdir(parents=True, exist_ok=True)
+    metadata = get_video_metadata(video_path)
 
     sampler = Sampler(
         every_n_frames=config.sampling.every_n_frames,
@@ -100,11 +104,56 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> di
     diff_threshold = int(config.processing["diff_threshold"])
     blur_kernel_size = int(config.processing["blur_kernel_size"])
     active_motion_threshold = float(config.processing["active_motion_threshold"])
+    progress_interval_seconds = float(config.logging.progress_update_seconds)
 
-    LOGGER.info("Processing video: %s", video_path)
+    start_time = time.monotonic()
+    last_progress_log_time = start_time
+    frames_processed = 0
+
+    LOGGER.info(
+        "Processing video: %s | frames=%s | fps=%.3f | duration=%.1fs",
+        video_path,
+        metadata.frame_count if metadata.frame_count > 0 else "unknown",
+        metadata.fps,
+        metadata.duration_seconds,
+    )
+
+    def log_progress(force: bool = False) -> None:
+        nonlocal last_progress_log_time
+
+        now = time.monotonic()
+        if not force and (now - last_progress_log_time) < progress_interval_seconds:
+            return
+
+        elapsed_seconds = max(now - start_time, 0.001)
+        progress_ratio = (frames_processed / metadata.frame_count) if metadata.frame_count > 0 else None
+
+        if progress_ratio is not None and progress_ratio > 0:
+            estimated_total_seconds = elapsed_seconds / progress_ratio
+            eta_seconds = max(estimated_total_seconds - elapsed_seconds, 0.0)
+            percent_text = f"{progress_ratio * 100:.1f}%"
+            eta_text = f"ETA {time.strftime('%H:%M:%S', time.gmtime(eta_seconds))}"
+            frame_text = f"{frames_processed}/{metadata.frame_count}"
+        else:
+            percent_text = "n/a"
+            eta_text = "ETA n/a"
+            frame_text = str(frames_processed)
+
+        LOGGER.info(
+            "Progress %s | frames=%s | sampled=%d | elapsed=%s | %s | %s",
+            video_path.name,
+            frame_text,
+            sampled_total,
+            time.strftime("%H:%M:%S", time.gmtime(elapsed_seconds)),
+            percent_text,
+            eta_text,
+        )
+
+        last_progress_log_time = now
 
     with output_file.open("w", encoding="utf-8") as handle:
         for frame_record in iter_video_frames(video_path):
+            frames_processed += 1
             segment_index = _segment_index_for_timestamp(config, frame_record.timestamp_seconds)
 
             if segment_index != current_segment.segment_index:
@@ -123,47 +172,47 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> di
                 )
                 previous_sampled_frame = None
 
-            if not sampler.should_sample(frame_record.frame_index, frame_record.timestamp_seconds):
-                continue
+            if sampler.should_sample(frame_record.frame_index, frame_record.timestamp_seconds):
+                motility = None
+                if previous_sampled_frame is not None:
+                    motility = compute_motility(
+                        previous_sampled_frame,
+                        frame_record.frame,
+                        diff_threshold=diff_threshold,
+                        blur_kernel_size=blur_kernel_size,
+                    )
+                    update_running_stats(
+                        current_segment.motility_stats,
+                        motility["motility_score"],
+                        active_motion_threshold,
+                    )
+                    update_running_stats(
+                        video_stats,
+                        motility["motility_score"],
+                        active_motion_threshold,
+                    )
 
-            motility = None
-            if previous_sampled_frame is not None:
-                motility = compute_motility(
-                    previous_sampled_frame,
-                    frame_record.frame,
-                    diff_threshold=diff_threshold,
-                    blur_kernel_size=blur_kernel_size,
+                frame_result = process_frame(
+                    frame_index=frame_record.frame_index,
+                    timestamp_seconds=frame_record.timestamp_seconds,
+                    segment_index=segment_index,
+                    motility=motility,
                 )
-                update_running_stats(
-                    current_segment.motility_stats,
-                    motility["motility_score"],
-                    active_motion_threshold,
+                handle.write(
+                    json.dumps(
+                        {
+                            "record_type": "frame_result",
+                            "video_name": video_path.name,
+                            "result": frame_result,
+                        }
+                    )
+                    + "\n"
                 )
-                update_running_stats(
-                    video_stats,
-                    motility["motility_score"],
-                    active_motion_threshold,
-                )
+                current_segment.sampled_frames += 1
+                sampled_total += 1
+                previous_sampled_frame = frame_record.frame
 
-            frame_result = process_frame(
-                frame_index=frame_record.frame_index,
-                timestamp_seconds=frame_record.timestamp_seconds,
-                segment_index=segment_index,
-                motility=motility,
-            )
-            handle.write(
-                json.dumps(
-                    {
-                        "record_type": "frame_result",
-                        "video_name": video_path.name,
-                        "result": frame_result,
-                    }
-                )
-                + "\n"
-            )
-            current_segment.sampled_frames += 1
-            sampled_total += 1
-            previous_sampled_frame = frame_record.frame
+            log_progress()
 
         segment_reports.append(
             _flush_segment(
@@ -173,6 +222,8 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> di
                 segment_duration_seconds=segment_duration,
             )
         )
+
+    log_progress(force=True)
 
     LOGGER.info("Completed %s | sampled frames: %d | output: %s", video_path.name, sampled_total, output_file)
     return {

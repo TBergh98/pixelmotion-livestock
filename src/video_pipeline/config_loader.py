@@ -34,6 +34,7 @@ class SamplingConfig:
 @dataclass(frozen=True)
 class LoggingConfig:
     level: str
+    progress_update_seconds: float
 
 
 @dataclass(frozen=True)
@@ -170,7 +171,15 @@ def _build_logging_config(section: dict[str, Any]) -> LoggingConfig:
     level = section.get("level")
     if not isinstance(level, str) or not level.strip():
         raise ValueError("logging.level must be a non-empty string.")
-    return LoggingConfig(level=level.strip().upper())
+
+    progress_update_seconds = section.get("progress_update_seconds", 30)
+    if not isinstance(progress_update_seconds, (int, float)) or float(progress_update_seconds) <= 0:
+        raise ValueError("logging.progress_update_seconds must be a positive number.")
+
+    return LoggingConfig(
+        level=level.strip().upper(),
+        progress_update_seconds=float(progress_update_seconds),
+    )
 
 
 def load_config(config_path: str | Path) -> AppConfig:
