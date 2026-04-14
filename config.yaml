@@ -1,0 +1,26 @@
+input:
+  path: r"\\10.100.113.14\2024scs4_genetail\Progetto Tacchini\Video tacchini\20260312"
+  recursive: false
+  allowed_extensions:
+    - ".mp4"
+    - ".avi"
+    - ".mov"
+    - ".mkv"
+
+output:
+  directory: "./data/output"
+
+segmentation:
+  enabled: true
+  segment_duration_seconds: 600
+
+sampling:
+  every_n_frames: 1
+  every_n_seconds: null
+
+processing:
+  placeholder_label: "unclassified"
+  placeholder_confidence: 0.0
+
+logging:
+  level: "INFO"
