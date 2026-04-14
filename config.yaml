@@ -1,5 +1,5 @@
 input:
-  path: r"\\10.100.113.14\2024scs4_genetail\Progetto Tacchini\Video tacchini\20260312"
+  path: '\\10.100.113.14\2024scs4_genetail\Progetto Tacchini\Video tacchini\20260312'
   recursive: false
   allowed_extensions:
     - ".mp4"
@@ -19,8 +19,9 @@ sampling:
   every_n_seconds: null
 
 processing:
-  placeholder_label: "unclassified"
-  placeholder_confidence: 0.0
+  diff_threshold: 25
+  blur_kernel_size: 5
+  active_motion_threshold: 0.02
 
 logging:
   level: "INFO"

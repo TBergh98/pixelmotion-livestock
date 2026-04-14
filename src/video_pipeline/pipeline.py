@@ -4,9 +4,17 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .config_loader import AppConfig
-from .processor import process_frame, process_segment
+from .processor import (
+    RunningStats,
+    compute_motility,
+    process_frame,
+    process_segment,
+    summarize_running_stats,
+    update_running_stats,
+)
 from .video_io import discover_videos, iter_video_frames
 
 LOGGER = logging.getLogger(__name__)
@@ -16,6 +24,7 @@ LOGGER = logging.getLogger(__name__)
 class SegmentState:
     segment_index: int
     sampled_frames: int
+    motility_stats: RunningStats
 
 
 class Sampler:
@@ -48,10 +57,10 @@ def _flush_segment(
     video_path: Path,
     segment_state: SegmentState,
     segment_duration_seconds: int,
-    processing_config: dict,
-) -> None:
+) -> dict[str, Any]:
     start_seconds = segment_state.segment_index * segment_duration_seconds
     end_seconds = start_seconds + segment_duration_seconds
+    motility_summary = summarize_running_stats(segment_state.motility_stats)
     record = {
         "record_type": "segment_summary",
         "video_name": video_path.name,
@@ -60,13 +69,20 @@ def _flush_segment(
             segment_start_seconds=start_seconds,
             segment_end_seconds=end_seconds,
             sampled_frames=segment_state.sampled_frames,
-            processing_config=processing_config,
+            motility_summary=motility_summary,
         ),
     }
     handle.write(json.dumps(record) + "\n")
+    return {
+        "segment_index": segment_state.segment_index,
+        "segment_start_seconds": round(start_seconds, 3),
+        "segment_end_seconds": round(end_seconds, 3),
+        "sampled_frames": segment_state.sampled_frames,
+        "motility": motility_summary,
+    }
 
 
-def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> None:
+def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> dict[str, Any]:
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     sampler = Sampler(
@@ -75,8 +91,15 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> No
     )
 
     segment_duration = config.segmentation.segment_duration_seconds
-    current_segment = SegmentState(segment_index=0, sampled_frames=0)
+    current_segment = SegmentState(segment_index=0, sampled_frames=0, motility_stats=RunningStats())
     sampled_total = 0
+    previous_sampled_frame = None
+    segment_reports: list[dict[str, Any]] = []
+    video_stats = RunningStats()
+
+    diff_threshold = int(config.processing["diff_threshold"])
+    blur_kernel_size = int(config.processing["blur_kernel_size"])
+    active_motion_threshold = float(config.processing["active_motion_threshold"])
 
     LOGGER.info("Processing video: %s", video_path)
 
@@ -85,23 +108,48 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> No
             segment_index = _segment_index_for_timestamp(config, frame_record.timestamp_seconds)
 
             if segment_index != current_segment.segment_index:
-                _flush_segment(
-                    handle=handle,
-                    video_path=video_path,
-                    segment_state=current_segment,
-                    segment_duration_seconds=segment_duration,
-                    processing_config=config.processing,
+                segment_reports.append(
+                    _flush_segment(
+                        handle=handle,
+                        video_path=video_path,
+                        segment_state=current_segment,
+                        segment_duration_seconds=segment_duration,
+                    )
                 )
-                current_segment = SegmentState(segment_index=segment_index, sampled_frames=0)
+                current_segment = SegmentState(
+                    segment_index=segment_index,
+                    sampled_frames=0,
+                    motility_stats=RunningStats(),
+                )
+                previous_sampled_frame = None
 
             if not sampler.should_sample(frame_record.frame_index, frame_record.timestamp_seconds):
                 continue
+
+            motility = None
+            if previous_sampled_frame is not None:
+                motility = compute_motility(
+                    previous_sampled_frame,
+                    frame_record.frame,
+                    diff_threshold=diff_threshold,
+                    blur_kernel_size=blur_kernel_size,
+                )
+                update_running_stats(
+                    current_segment.motility_stats,
+                    motility["motility_score"],
+                    active_motion_threshold,
+                )
+                update_running_stats(
+                    video_stats,
+                    motility["motility_score"],
+                    active_motion_threshold,
+                )
 
             frame_result = process_frame(
                 frame_index=frame_record.frame_index,
                 timestamp_seconds=frame_record.timestamp_seconds,
                 segment_index=segment_index,
-                processing_config=config.processing,
+                motility=motility,
             )
             handle.write(
                 json.dumps(
@@ -115,16 +163,26 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> No
             )
             current_segment.sampled_frames += 1
             sampled_total += 1
+            previous_sampled_frame = frame_record.frame
 
-        _flush_segment(
-            handle=handle,
-            video_path=video_path,
-            segment_state=current_segment,
-            segment_duration_seconds=segment_duration,
-            processing_config=config.processing,
+        segment_reports.append(
+            _flush_segment(
+                handle=handle,
+                video_path=video_path,
+                segment_state=current_segment,
+                segment_duration_seconds=segment_duration,
+            )
         )
 
     LOGGER.info("Completed %s | sampled frames: %d | output: %s", video_path.name, sampled_total, output_file)
+    return {
+        "video_name": video_path.name,
+        "input_path": str(video_path),
+        "output_jsonl": str(output_file),
+        "sampled_frames": sampled_total,
+        "segments": segment_reports,
+        "motility": summarize_running_stats(video_stats),
+    }
 
 
 def run_pipeline(config: AppConfig) -> None:
@@ -135,6 +193,13 @@ def run_pipeline(config: AppConfig) -> None:
 
     LOGGER.info("Discovered %d video(s).", len(videos))
 
+    reports: list[dict[str, Any]] = []
     for video_path in videos:
         output_file = config.output.directory / f"{video_path.stem}_results.jsonl"
-        _process_video(video_path=video_path, output_file=output_file, config=config)
+        report = _process_video(video_path=video_path, output_file=output_file, config=config)
+        reports.append(report)
+
+    report_file = config.output.directory / "motility_report.json"
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    report_file.write_text(json.dumps({"videos": reports}, indent=2), encoding="utf-8")
+    LOGGER.info("Motility report written to: %s", report_file)

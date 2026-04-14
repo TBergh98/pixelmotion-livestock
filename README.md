@@ -1,7 +1,7 @@
 # Video Processing Pipeline (Python + OpenCV)
 
 This repository provides a simple, memory-safe video processing pipeline for long recordings.
-It reads video frames as a stream (never loading full files into RAM), applies placeholder processing logic, and writes results to an output folder.
+It reads video frames as a stream (never loading full files into RAM), computes a pixel-based motility metric, and writes results to an output folder.
 
 ## What It Does
 
@@ -11,8 +11,9 @@ It reads video frames as a stream (never loading full files into RAM), applies p
 - Samples frames by either:
   - every N frames, or
   - every N seconds
-- Runs placeholder frame/segment processing (ready for real logic later)
-- Writes JSONL results to a configured output directory
+- Computes motion between consecutive sampled frames using pixel differences
+- Produces descriptive motility statistics for each segment and each video
+- Writes JSONL details and a final JSON report to the configured output directory
 
 ## Out of Scope (Intentionally)
 
@@ -40,13 +41,15 @@ All tuneable parameters are in [config.yaml](config.yaml):
 - input/output paths
 - segment duration
 - frame sampling settings
-- processing placeholders
+- motility parameters (difference threshold, blur kernel, active-frame threshold)
 - logging level
 
 Sampling is strict: configure **exactly one** of:
 
 - `sampling.every_n_frames`
 - `sampling.every_n_seconds`
+
+For pixel-based motility, the recommended setting is `sampling.every_n_frames: 1`.
 
 ## Run
 
@@ -59,7 +62,7 @@ python -m src.video_pipeline.cli --config ./config.yaml
 For each input video, the pipeline writes one `.jsonl` file into the configured output directory.
 Each line is a JSON object representing either:
 
-- a sampled frame result, or
-- a segment summary
+- a sampled frame result with motion fields, or
+- a segment summary with descriptive motility stats
 
-This keeps output append-friendly and practical for large jobs.
+The pipeline also writes `motility_report.json` with per-video and per-segment summaries.

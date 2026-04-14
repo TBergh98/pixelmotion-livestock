@@ -145,6 +145,27 @@ def _build_sampling_config(section: dict[str, Any]) -> SamplingConfig:
     )
 
 
+def _build_processing_config(section: dict[str, Any]) -> dict[str, Any]:
+    config = dict(section)
+
+    diff_threshold = config.get("diff_threshold", 25)
+    if not isinstance(diff_threshold, int) or not 0 <= diff_threshold <= 255:
+        raise ValueError("processing.diff_threshold must be an integer between 0 and 255.")
+
+    blur_kernel_size = config.get("blur_kernel_size", 5)
+    if not isinstance(blur_kernel_size, int) or blur_kernel_size <= 0 or blur_kernel_size % 2 == 0:
+        raise ValueError("processing.blur_kernel_size must be a positive odd integer.")
+
+    active_motion_threshold = config.get("active_motion_threshold", 0.02)
+    if not isinstance(active_motion_threshold, (int, float)) or not 0 <= float(active_motion_threshold) <= 1:
+        raise ValueError("processing.active_motion_threshold must be a number between 0 and 1.")
+
+    config["diff_threshold"] = diff_threshold
+    config["blur_kernel_size"] = blur_kernel_size
+    config["active_motion_threshold"] = float(active_motion_threshold)
+    return config
+
+
 def _build_logging_config(section: dict[str, Any]) -> LoggingConfig:
     level = section.get("level")
     if not isinstance(level, str) or not level.strip():
@@ -177,6 +198,6 @@ def load_config(config_path: str | Path) -> AppConfig:
         output=_build_output_config(output_section, config_dir),
         segmentation=_build_segmentation_config(segmentation_section),
         sampling=_build_sampling_config(sampling_section),
-        processing=processing_section,
+        processing=_build_processing_config(processing_section),
         logging=_build_logging_config(logging_section),
     )
