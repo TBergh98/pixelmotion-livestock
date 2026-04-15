@@ -13,7 +13,14 @@ Requirements:
 - Python 3.10+
 - OpenCV runtime dependencies for your OS
 
-Install:
+Create and activate Conda environment:
+
+```bash
+conda env create -f environment.yml
+conda activate pixelmotion-livestock
+```
+
+Alternative (already active environment):
 
 ```bash
 pip install -r requirements.txt
@@ -57,12 +64,14 @@ The pipeline compares each sampled frame with the previous sampled frame (inside
 Formally:
 
 $$
-	ext{motility\_score} = \frac{\text{changed\_pixels}}{\text{total\_pixels}}
+m = \frac{C}{P}
 $$
 
 $$
-	ext{mean\_diff\_intensity} = \frac{\operatorname{mean}(|I_t - I_{t-1}|)}{255}
+d = \frac{\operatorname{mean}(|I_t - I_{t-1}|)}{255}
 $$
+
+where $m$ is motility score, $C$ is changed pixels, $P$ is total pixels, and $d$ is mean diff intensity.
 
 4. Segment/video aggregate metrics
 - count: number of valid motility scores in the group
@@ -82,10 +91,10 @@ $$
 $$
 
 $$
-	ext{active\_ratio} = \frac{\#\{x_i \mid x_i \geq \tau\}}{N}
+r = \frac{\#\{x_i \mid x_i \geq \tau\}}{N}
 $$
 
-where $x_i$ is motility_score and $\tau$ is active_motion_threshold.
+where $x_i$ is motility score, $\tau$ is active motion threshold, and $r$ is active ratio.
 
 ## Notes
 
