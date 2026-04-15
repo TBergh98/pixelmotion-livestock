@@ -68,7 +68,7 @@ m = \frac{C}{P}
 $$
 
 $$
-d = \frac{\operatorname{mean}(|I_t - I_{t-1}|)}{255}
+d = \frac{\mathrm{avg}(|I_t - I_{t-1}|)}{255}
 $$
 
 where $m$ is motility score, $C$ is changed pixels, $P$ is total pixels, and $d$ is mean diff intensity.
@@ -91,7 +91,7 @@ $$
 $$
 
 $$
-r = \frac{\#\{x_i \mid x_i \geq \tau\}}{N}
+r = \frac{|\{x_i \mid x_i \geq \tau\}|}{N}
 $$
 
 where $x_i$ is motility score, $\tau$ is active motion threshold, and $r$ is active ratio.
