@@ -44,7 +44,7 @@ hierarchy:
 
 # Analytics: Configure trend analysis, metrics, and plotting
 analytics:
-  enabled: false  # Set to true to generate intra-day/inter-day plots and metrics
+  enabled: true  # Generate intra-day/inter-day plots and metrics during pipeline runs
   
   # Intra-day window granularity (in seconds)
   # Determines time window for aggregating frame-level data into trends

@@ -1,0 +1,25 @@
+{
+  "group_id": "demo_group",
+  "primary_metric": "median",
+  "daily_summaries": [
+    {
+      "date": "2026-04-15",
+      "mean": 0.047554,
+      "median": 0.047555,
+      "std": 0.012746,
+      "min": 0.017939,
+      "max": 0.177575,
+      "amplitude": 0.159636,
+      "active_ratio": 0.99604,
+      "primary_value": 0.047555
+    }
+  ],
+  "trend_analysis": {
+    "primary_metric": "median",
+    "daily_count": 1,
+    "primary_mean": 0.047555,
+    "primary_std": 0.0,
+    "primary_min": 0.047555,
+    "primary_max": 0.047555
+  }
+}

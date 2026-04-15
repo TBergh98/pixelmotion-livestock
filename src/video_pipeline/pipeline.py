@@ -1,15 +1,30 @@
 from __future__ import annotations
 
-from __future__ import annotations
-
 import json
 import logging
 import time
+from collections import defaultdict
+from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .analytics import (
+    IntraDayMetrics,
+    aggregate_into_windows,
+    compute_interday_metrics,
+    compute_intraday_metrics,
+    load_frame_data_from_jsonl,
+    save_interday_metrics_json,
+    save_intraday_metrics_json,
+)
 from .config_loader import AppConfig
+from .plotting import (
+    plot_interday_delta,
+    plot_interday_trend,
+    plot_intraday_distribution,
+    plot_intraday_timeseries,
+)
 from .processor import (
     RunningStats,
     compute_motility,
@@ -47,6 +62,165 @@ class Sampler:
             return False
 
         return False
+
+
+def _sanitize_path_component(value: str | None, fallback: str) -> str:
+    if value is None:
+        return fallback
+
+    stripped = value.strip()
+    if not stripped:
+        return fallback
+
+    return stripped.replace("/", "_").replace("\\", "_").replace(":", "-")
+
+
+def _build_video_output_path(config: AppConfig, video_path: Path, group_id: str | None, recording_date: str | None) -> Path:
+    group_key = _sanitize_path_component(group_id, "ungrouped")
+    date_key = _sanitize_path_component(recording_date, "undated")
+    return config.output.directory / "results" / group_key / date_key / f"{video_path.stem}_results.jsonl"
+
+
+def _build_analytics_base_dir(config: AppConfig, group_id: str | None, recording_date: str | None) -> Path:
+    group_key = _sanitize_path_component(group_id, "ungrouped")
+    date_key = _sanitize_path_component(recording_date, "undated")
+    return config.output.directory / config.analytics.output_subdir / group_key / date_key
+
+
+def _generate_intraday_artifacts(
+    config: AppConfig,
+    report: dict[str, Any],
+) -> IntraDayMetrics | None:
+    jsonl_path = Path(report["output_jsonl"])
+    frame_records = load_frame_data_from_jsonl(jsonl_path)
+    if not frame_records:
+        LOGGER.warning("Skipping analytics for %s: no frame-level motility records.", jsonl_path)
+        return None
+
+    group_id = report.get("group_id")
+    recording_date = report.get("recording_date")
+    intraday = compute_intraday_metrics(
+        frame_records=frame_records,
+        window_seconds=config.analytics.intraday_window_seconds,
+        percentiles_list=list(config.analytics.percentiles),
+        include_slope=config.analytics.include_trend_slope,
+        recording_date=recording_date,
+        group_id=group_id,
+    )
+
+    analytics_day_dir = _build_analytics_base_dir(config, group_id, recording_date)
+    metrics_path = analytics_day_dir / "intraday_metrics.json"
+    save_intraday_metrics_json(intraday, metrics_path)
+
+    report["analytics"] = {
+        "intraday_metrics": str(metrics_path),
+        "plots": [],
+    }
+
+    windows_data = aggregate_into_windows(frame_records, config.analytics.intraday_window_seconds)
+    descriptive_stats = {idx: asdict(stats) for idx, stats in intraday.windows.items()}
+    plots_dir = analytics_day_dir / "plots"
+
+    if config.analytics.plots.get("intraday_timeseries", False):
+        png_path, html_path = plot_intraday_timeseries(
+            windows_data=windows_data,
+            window_duration_seconds=config.analytics.intraday_window_seconds,
+            descriptive_stats=descriptive_stats,
+            group_id=group_id,
+            recording_date=recording_date,
+            output_dir=plots_dir,
+            generate_png=config.analytics.output_formats.get("png", True),
+            generate_html=config.analytics.output_formats.get("html", False),
+        )
+        if png_path is not None:
+            report["analytics"]["plots"].append(str(png_path))
+        if html_path is not None:
+            report["analytics"]["plots"].append(str(html_path))
+
+    if config.analytics.plots.get("intraday_distribution", False):
+        png_path, html_path = plot_intraday_distribution(
+            windows_data=windows_data,
+            window_duration_seconds=config.analytics.intraday_window_seconds,
+            group_id=group_id,
+            recording_date=recording_date,
+            output_dir=plots_dir,
+            generate_png=config.analytics.output_formats.get("png", True),
+            generate_html=config.analytics.output_formats.get("html", False),
+        )
+        if png_path is not None:
+            report["analytics"]["plots"].append(str(png_path))
+        if html_path is not None:
+            report["analytics"]["plots"].append(str(html_path))
+
+    return intraday
+
+
+def _generate_interday_artifacts(config: AppConfig, group_key: str, daily_metrics: list[IntraDayMetrics]) -> dict[str, Any]:
+    if not daily_metrics:
+        return {}
+
+    interday = compute_interday_metrics(
+        daily_metrics_list=daily_metrics,
+        primary_metric=config.analytics.primary_metric,
+    )
+    group_dir = config.output.directory / config.analytics.output_subdir / group_key / "interday"
+    interday_metrics_path = group_dir / "interday_metrics.json"
+    save_interday_metrics_json(interday, interday_metrics_path)
+
+    generated_plots: list[str] = []
+    plots_dir = group_dir / "plots"
+
+    if config.analytics.plots.get("interday_trend", False):
+        png_path, html_path = plot_interday_trend(
+            daily_summaries=interday.daily_summaries,
+            group_id=group_key,
+            output_dir=plots_dir,
+            generate_png=config.analytics.output_formats.get("png", True),
+            generate_html=config.analytics.output_formats.get("html", False),
+        )
+        if png_path is not None:
+            generated_plots.append(str(png_path))
+        if html_path is not None:
+            generated_plots.append(str(html_path))
+
+    if config.analytics.plots.get("interday_delta", False):
+        png_path, html_path = plot_interday_delta(
+            daily_summaries=interday.daily_summaries,
+            group_id=group_key,
+            output_dir=plots_dir,
+            generate_png=config.analytics.output_formats.get("png", True),
+            generate_html=config.analytics.output_formats.get("html", False),
+        )
+        if png_path is not None:
+            generated_plots.append(str(png_path))
+        if html_path is not None:
+            generated_plots.append(str(html_path))
+
+    return {
+        "interday_metrics": str(interday_metrics_path),
+        "plots": generated_plots,
+    }
+
+
+def _run_analytics(config: AppConfig, reports: list[dict[str, Any]]) -> dict[str, Any]:
+    grouped_daily_metrics: dict[str, list[IntraDayMetrics]] = defaultdict(list)
+
+    for report in reports:
+        intraday = _generate_intraday_artifacts(config=config, report=report)
+        if intraday is None:
+            continue
+        group_key = _sanitize_path_component(intraday.group_id, "ungrouped")
+        grouped_daily_metrics[group_key].append(intraday)
+
+    summary: dict[str, Any] = {"groups": {}}
+    for group_key, daily_metrics in grouped_daily_metrics.items():
+        summary["groups"][group_key] = _generate_interday_artifacts(
+            config=config,
+            group_key=group_key,
+            daily_metrics=daily_metrics,
+        )
+
+    return summary
 
 
 def _segment_index_for_timestamp(config: AppConfig, timestamp_seconds: float) -> int:
@@ -248,11 +422,21 @@ def run_pipeline(config: AppConfig) -> None:
 
     reports: list[dict[str, Any]] = []
     for video_path, group_id, recording_date in videos:
-        output_file = config.output.directory / f"{video_path.stem}_results.jsonl"
+        output_file = _build_video_output_path(
+            config=config,
+            video_path=video_path,
+            group_id=group_id,
+            recording_date=recording_date,
+        )
         report = _process_video(video_path=video_path, output_file=output_file, config=config, group_id=group_id, recording_date=recording_date)
         reports.append(report)
 
+    report_payload: dict[str, Any] = {"videos": reports}
+    if config.analytics.enabled:
+        LOGGER.info("Analytics enabled: generating metrics and plots.")
+        report_payload["analytics"] = _run_analytics(config=config, reports=reports)
+
     report_file = config.output.directory / "motility_report.json"
     report_file.parent.mkdir(parents=True, exist_ok=True)
-    report_file.write_text(json.dumps({"videos": reports}, indent=2), encoding="utf-8")
+    report_file.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
     LOGGER.info("Motility report written to: %s", report_file)

@@ -6,4 +6,8 @@ dependencies:
   - python=3.10
   - opencv
   - pyyaml
+  - numpy
+  - matplotlib
   - pip
+  - pip:
+      - plotly>=5.22.0
