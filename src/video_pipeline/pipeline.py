@@ -85,9 +85,9 @@ def _flush_segment(
     }
 
 
-def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> dict[str, Any]:
+def _process_video(video_path: Path, output_file: Path, config: AppConfig, group_id: str | None = None, recording_date: str | None = None) -> dict[str, Any]:
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    metadata = get_video_metadata(video_path)
+    metadata = get_video_metadata(video_path, group_id=group_id, recording_date=recording_date)
 
     sampler = Sampler(
         every_n_frames=config.sampling.every_n_frames,
@@ -230,6 +230,8 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> di
         "video_name": video_path.name,
         "input_path": str(video_path),
         "output_jsonl": str(output_file),
+        "group_id": group_id,
+        "recording_date": recording_date,
         "sampled_frames": sampled_total,
         "segments": segment_reports,
         "motility": summarize_running_stats(video_stats),
@@ -237,7 +239,7 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig) -> di
 
 
 def run_pipeline(config: AppConfig) -> None:
-    videos = discover_videos(config.input)
+    videos = discover_videos(config.input, config.hierarchy)
     if not videos:
         LOGGER.warning("No videos found under configured input path: %s", config.input.path)
         return
@@ -245,9 +247,9 @@ def run_pipeline(config: AppConfig) -> None:
     LOGGER.info("Discovered %d video(s).", len(videos))
 
     reports: list[dict[str, Any]] = []
-    for video_path in videos:
+    for video_path, group_id, recording_date in videos:
         output_file = config.output.directory / f"{video_path.stem}_results.jsonl"
-        report = _process_video(video_path=video_path, output_file=output_file, config=config)
+        report = _process_video(video_path=video_path, output_file=output_file, config=config, group_id=group_id, recording_date=recording_date)
         reports.append(report)
 
     report_file = config.output.directory / "motility_report.json"

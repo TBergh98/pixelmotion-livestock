@@ -26,3 +26,64 @@ processing:
 logging:
   level: "INFO"
   progress_update_seconds: 30
+
+# Hierarchy: Define folder structure for metadata extraction (e.g., group/day/video.mp4)
+# Enables automatic separation of analysis by group, preventing cross-group comparison
+hierarchy:
+  enabled: false  # Set to true to enforce hierarchy-based group/day extraction
+  # Levels define the expected folder structure, from root to video file
+  # Supported types: "string" (arbitrary folder name), "date" (ISO YYYY-MM-DD)
+  levels:
+    - name: "group"
+      type: "string"      # e.g., "GroupA", "GroupB"
+    - name: "day"
+      type: "date"        # e.g., "2026-04-15"
+  date_format: "YYYY-MM-DD"  # Expected date format for "day" level
+  fail_on_mixed_groups: true  # If true, error if videos from multiple groups in single run
+  fail_on_invalid_date: true  # If true, error if date format doesn't match
+
+# Analytics: Configure trend analysis, metrics, and plotting
+analytics:
+  enabled: false  # Set to true to generate intra-day/inter-day plots and metrics
+  
+  # Intra-day window granularity (in seconds)
+  # Determines time window for aggregating frame-level data into trends
+  intraday_window_seconds: 300  # Default: 5 minutes; set to 0 to skip intra-day analysis
+  
+  # Smoothing for intra-day time series
+  smooth_enabled: true
+  smooth_window_size: 3  # Moving average window (odd number recommended)
+  
+  # Descriptive statistics to compute and save
+  descriptive_metrics:
+    enabled: true
+    # List of percentiles to compute (e.g., [10, 25, 50, 75, 90])
+    percentiles: [10, 25, 50, 75, 90]
+    # Compute coefficient of variation (std/mean) for variability assessment
+    include_coeff_variation: true
+    # Compute inter-segment trend (linear regression slope)
+    include_trend_slope: true
+  
+  # Output formats for plots
+  output_formats:
+    png: true   # Generate static PNG plots
+    html: true  # Generate interactive HTML plots (Plotly)
+  
+  # Plot configuration
+  plots:
+    # Intra-day time series: motility score over time
+    intraday_timeseries: true
+    # Intra-day distribution: box/violin plot for time windows
+    intraday_distribution: true
+    # Heatmap: hour-of-day vs day aggregation
+    intraday_heatmap: true
+    # Inter-day trend: daily metric evolution
+    interday_trend: true
+    # Inter-day delta: day-over-day change
+    interday_delta: true
+  
+  # Directory for analytics outputs (relative to output.directory)
+  output_subdir: "analytics"
+  
+  # Metric to use as primary for inter-day trend (e.g., "median", "mean")
+  primary_metric: "median"
