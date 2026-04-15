@@ -1,5 +1,5 @@
 input:
-  path: '\\10.100.113.14\2024scs4_genetail\Progetto Tacchini\Video tacchini\20260312'
+  path: 'data\input'
   recursive: false
   allowed_extensions:
     - ".mp4"

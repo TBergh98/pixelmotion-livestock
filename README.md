@@ -1,68 +1,93 @@
-# Video Processing Pipeline (Python + OpenCV)
+# Video Motility Pipeline
 
-This repository provides a simple, memory-safe video processing pipeline for long recordings.
-It reads video frames as a stream (never loading full files into RAM), computes a pixel-based motility metric, and writes results to an output folder.
+Minimal pipeline (Python + OpenCV) to process long videos as a stream, compute pixel-based motility, and export results.
 
-## What It Does
+## What It Produces
 
-- Reads one or many videos from a configured input path
-- Supports long video files through frame-by-frame streaming with OpenCV
-- Optionally uses logical segment windows (for example, every 10 minutes)
-- Samples frames by either:
-  - every N frames, or
-  - every N seconds
-- Computes motion between consecutive sampled frames using pixel differences
-- Produces descriptive motility statistics for each segment and each video
-- Writes JSONL details and a final JSON report to the configured output directory
+- One JSONL file per video: frame-level records + segment summaries.
+- One final report: data/output/motility_report.json with per-segment and per-video aggregates.
 
-## Out of Scope (Intentionally)
+## Quick Start
 
-- Databases, ORMs, and queues
-- Docker and CI/CD setup
-- Cloud integrations
-- Plugin architecture and abstract class hierarchies
-- Unit test scaffold
-
-## Requirements
-
+Requirements:
 - Python 3.10+
-- OpenCV dependencies for your OS
+- OpenCV runtime dependencies for your OS
 
-Install dependencies:
+Install:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Configuration
-
-All tuneable parameters are in [config.yaml](config.yaml):
-
-- input/output paths
-- segment duration
-- frame sampling settings
-- motility parameters (difference threshold, blur kernel, active-frame threshold)
-- logging level and progress update interval
-
-Sampling is strict: configure **exactly one** of:
-
-- `sampling.every_n_frames`
-- `sampling.every_n_seconds`
-
-For pixel-based motility, the recommended setting is `sampling.every_n_frames: 1`.
-
-## Run
+Run:
 
 ```bash
 python -m src.video_pipeline.cli --config ./config.yaml
 ```
 
-## Output
+## Key Configuration
 
-For each input video, the pipeline writes one `.jsonl` file into the configured output directory.
-Each line is a JSON object representing either:
+Main settings are in [config.yaml](config.yaml):
 
-- a sampled frame result with motion fields, or
-- a segment summary with descriptive motility stats
+- segmentation.segment_duration_seconds
+- sampling.every_n_frames or sampling.every_n_seconds (set exactly one)
+- processing.diff_threshold
+- processing.blur_kernel_size
+- processing.active_motion_threshold
 
-The pipeline also writes `motility_report.json` with per-video and per-segment summaries.
+## How Metrics Are Calculated
+
+The pipeline compares each sampled frame with the previous sampled frame (inside the same segment).
+
+1. Pre-processing
+- Convert both frames to grayscale.
+- Optionally apply Gaussian blur (kernel = blur_kernel_size).
+
+2. Pixel difference and threshold
+- Compute absolute difference image.
+- Mark pixel as changed if diff >= diff_threshold.
+
+3. Frame-level metrics
+- changed_pixels = number of changed pixels
+- total_pixels = frame width * frame height
+- active_pixel_ratio = changed_pixels / total_pixels
+- motility_score = active_pixel_ratio
+- mean_diff_intensity = mean(abs_diff) / 255
+
+Formally:
+
+$$
+	ext{motility\_score} = \frac{\text{changed\_pixels}}{\text{total\_pixels}}
+$$
+
+$$
+	ext{mean\_diff\_intensity} = \frac{\operatorname{mean}(|I_t - I_{t-1}|)}{255}
+$$
+
+4. Segment/video aggregate metrics
+- count: number of valid motility scores in the group
+- mean: average of motility_score
+- std: standard deviation
+- min, max: extrema of motility_score
+- active_ratio: fraction of scores >= active_motion_threshold
+
+Formally:
+
+$$
+\mu = \frac{1}{N}\sum_{i=1}^{N} x_i
+$$
+
+$$
+\sigma = \sqrt{\max\left(\frac{1}{N}\sum_{i=1}^{N}x_i^2 - \mu^2,\,0\right)}
+$$
+
+$$
+	ext{active\_ratio} = \frac{\#\{x_i \mid x_i \geq \tau\}}{N}
+$$
+
+where $x_i$ is motility_score and $\tau$ is active_motion_threshold.
+
+## Notes
+
+- The first sampled frame of each segment has no previous frame to compare against, so it has no motility fields.
+- For this reason, sampled_frames can be greater than motility.count.
