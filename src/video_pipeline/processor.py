@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import cv2
+import numpy as np
 
 
 @dataclass
@@ -51,13 +52,56 @@ def summarize_running_stats(stats: RunningStats) -> dict[str, float | int]:
     }
 
 
+def compute_spatial_grid_array(
+    thresholded: object,
+    grid_size: int = 16,
+) -> list[float]:
+    """
+    Divide a thresholded binary image into a grid and compute motion density per cell.
+    
+    Args:
+        thresholded: Binary OpenCV image (uint8) where pixels are 0 or 255
+        grid_size: Number of rows/columns in the grid (e.g., 16 for 16x16)
+        
+    Returns:
+        List of grid_size^2 floats in range [0, 1] representing density per cell.
+        Row-major order: cell[i, j] = result[i * grid_size + j]
+    """
+    if thresholded is None:
+        return [0.0] * (grid_size * grid_size)
+    
+    thresholded_array = np.asarray(thresholded, dtype=np.uint8)
+    height, width = thresholded_array.shape
+    
+    grid = []
+    cell_height = max(1, height // grid_size)
+    cell_width = max(1, width // grid_size)
+    
+    for i in range(grid_size):
+        for j in range(grid_size):
+            row_start = i * cell_height
+            row_end = (i + 1) * cell_height if i < grid_size - 1 else height
+            col_start = j * cell_width
+            col_end = (j + 1) * cell_width if j < grid_size - 1 else width
+            
+            cell = thresholded_array[row_start:row_end, col_start:col_end]
+            total_pixels = cell.size
+            changed_pixels = int(np.sum(cell > 0))
+            density = (changed_pixels / total_pixels) if total_pixels > 0 else 0.0
+            grid.append(round(float(density), 6))
+    
+    return grid
+
+
 def compute_motility(
     previous_frame: object,
     current_frame: object,
     *,
     diff_threshold: int,
     blur_kernel_size: int,
-) -> dict[str, float]:
+    compute_spatial_grid: bool = False,
+    spatial_grid_size: int = 16,
+) -> dict[str, Any]:
     prev_gray = cv2.cvtColor(previous_frame, cv2.COLOR_BGR2GRAY)
     curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
 
@@ -74,11 +118,16 @@ def compute_motility(
     active_pixel_ratio = (changed_pixels / total_pixels) if total_pixels else 0.0
     mean_diff_intensity = float(diff.mean()) / 255.0 if total_pixels else 0.0
 
-    return {
+    result = {
         "motility_score": round(active_pixel_ratio, 6),
         "active_pixel_ratio": round(active_pixel_ratio, 6),
         "mean_diff_intensity": round(mean_diff_intensity, 6),
     }
+    
+    if compute_spatial_grid:
+        result["spatial_grid"] = compute_spatial_grid_array(thresholded, spatial_grid_size)
+    
+    return result
 
 
 def process_frame(
@@ -86,7 +135,7 @@ def process_frame(
     frame_index: int,
     timestamp_seconds: float,
     segment_index: int,
-    motility: dict[str, float] | None,
+    motility: dict[str, Any] | None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "frame_index": frame_index,

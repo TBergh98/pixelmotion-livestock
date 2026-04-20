@@ -12,6 +12,7 @@ from typing import Any
 from .analytics import (
     IntraDayMetrics,
     aggregate_into_windows,
+    aggregate_spatial_grids_into_windows,
     compute_interday_metrics,
     compute_intraday_metrics,
     load_frame_data_from_jsonl,
@@ -24,6 +25,7 @@ from .plotting import (
     plot_interday_trend,
     plot_intraday_distribution,
     plot_intraday_timeseries,
+    plot_spatial_heatmap,
 )
 from .processor import (
     RunningStats,
@@ -152,6 +154,28 @@ def _generate_intraday_artifacts(
         if html_path is not None:
             report["analytics"]["plots"].append(str(html_path))
 
+    if config.analytics.plots.get("intraday_heatmap", False):
+        try:
+            spatial_grids = aggregate_spatial_grids_into_windows(
+                frame_records=frame_records,
+                window_seconds=config.analytics.intraday_window_seconds,
+                grid_size=int(config.processing.get("spatial_grid_size", 16)),
+            )
+            if spatial_grids:
+                heatmap_path = plot_spatial_heatmap(
+                    spatial_grids=spatial_grids,
+                    window_duration_seconds=config.analytics.intraday_window_seconds,
+                    group_id=group_id,
+                    recording_date=recording_date,
+                    output_dir=plots_dir,
+                    grid_size=int(config.processing.get("spatial_grid_size", 16)),
+                    generate_png=config.analytics.output_formats.get("png", True),
+                )
+                if heatmap_path is not None:
+                    report["analytics"]["plots"].append(str(heatmap_path))
+        except Exception as e:
+            LOGGER.warning(f"Failed to generate spatial heatmap: {e}")
+
     return intraday
 
 
@@ -278,6 +302,8 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
     diff_threshold = int(config.processing["diff_threshold"])
     blur_kernel_size = int(config.processing["blur_kernel_size"])
     active_motion_threshold = float(config.processing["active_motion_threshold"])
+    compute_spatial_grid = bool(config.processing.get("compute_spatial_grid", False))
+    spatial_grid_size = int(config.processing.get("spatial_grid_size", 16))
     progress_interval_seconds = float(config.logging.progress_update_seconds)
 
     start_time = time.monotonic()
@@ -354,6 +380,8 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
                         frame_record.frame,
                         diff_threshold=diff_threshold,
                         blur_kernel_size=blur_kernel_size,
+                        compute_spatial_grid=compute_spatial_grid,
+                        spatial_grid_size=spatial_grid_size,
                     )
                     update_running_stats(
                         current_segment.motility_stats,

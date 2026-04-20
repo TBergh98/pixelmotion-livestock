@@ -291,6 +291,90 @@ def plot_interday_delta(
         return None, None
 
 
+def plot_spatial_heatmap(
+    spatial_grids: dict[int, list[float]],
+    window_duration_seconds: int,
+    group_id: str | None,
+    recording_date: str | None,
+    output_dir: Path,
+    grid_size: int = 16,
+    generate_png: bool = True,
+) -> Path | None:
+    """
+    Generate spatial heatmap showing where motion is concentrated across the frame.
+    
+    Args:
+        spatial_grids: Dict mapping window_index to flattened grid (list of grid_size^2 floats in [0,1])
+        window_duration_seconds: Duration of each window
+        group_id: Group identifier
+        recording_date: Recording date
+        output_dir: Output directory for saving plot
+        grid_size: Grid dimensionality (default 16 for 16x16)
+        generate_png: Whether to generate PNG output
+        
+    Returns:
+        Path to PNG file or None if generation fails
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    png_path: Path | None = None
+    date_str = recording_date or "nodate"
+    group_str = group_id or "unknown"
+    
+    try:
+        if not generate_png:
+            return None
+        
+        plt = _import_matplotlib()
+        if plt is None:
+            LOGGER.warning("matplotlib not available for spatial heatmap")
+            return None
+        
+        if not spatial_grids:
+            LOGGER.warning("No spatial grids available for heatmap")
+            return None
+        
+        # Average grids across windows into a single heatmap
+        grid_cells = grid_size * grid_size
+        aggregated_grid = np.zeros(grid_cells, dtype=float)
+        window_count = len(spatial_grids)
+        
+        for window_idx, grid in spatial_grids.items():
+            grid_array = np.array(grid[:grid_cells], dtype=float)
+            aggregated_grid += grid_array
+        
+        if window_count > 0:
+            aggregated_grid /= window_count
+        
+        # Reshape to 2D grid
+        heatmap_2d = aggregated_grid.reshape((grid_size, grid_size))
+        
+        # Create heatmap plot
+        fig, ax = plt.subplots(figsize=(8, 8))
+        im = ax.imshow(heatmap_2d, cmap='hot', origin='upper', aspect='auto', vmin=0, vmax=1)
+        ax.set_xlabel('X (pixels)', fontsize=11)
+        ax.set_ylabel('Y (pixels)', fontsize=11)
+        ax.set_title(f'Spatial Motility Heatmap - {group_str} ({date_str})', fontsize=13)
+        
+        # Add colorbar
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label('Motion Density', fontsize=10)
+        
+        # Add grid overlay
+        ax.set_xticks(np.arange(-0.5, grid_size, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, grid_size, 1), minor=True)
+        ax.grid(which='minor', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
+        
+        png_path = output_dir / f"spatial_heatmap_{date_str}_{group_str}.png"
+        fig.savefig(png_path, dpi=100, bbox_inches='tight')
+        plt.close(fig)
+        LOGGER.info("Saved spatial heatmap PNG plot to %s", png_path)
+        
+        return png_path
+    except Exception as e:
+        LOGGER.error(f"Failed to generate spatial heatmap: {e}")
+        return None
+
+
 def generate_plots_for_group(
     group_id: str,
     intraday_metrics_dir: Path,

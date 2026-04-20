@@ -1,6 +1,6 @@
 input:
-  path: 'data\input'
-  recursive: false
+  path: 'D:\Video Tacchini'
+  recursive: true
   allowed_extensions:
     - ".mp4"
     - ".avi"
@@ -22,6 +22,11 @@ processing:
   diff_threshold: 25
   blur_kernel_size: 5
   active_motion_threshold: 0.02
+  
+  # Spatial heatmap: divide each frame into a grid and compute motion density per cell
+  # Set compute_spatial_grid to true to enable; grids are stored in JSONL records
+  compute_spatial_grid: true   # Set to true to enable spatial heatmap feature
+  spatial_grid_size: 16        # Grid granularity: 16x16 = 256 cells per frame
 
 logging:
   level: "INFO"
@@ -30,7 +35,7 @@ logging:
 # Hierarchy: Define folder structure for metadata extraction (e.g., group/day/video.mp4)
 # Enables automatic separation of analysis by group, preventing cross-group comparison
 hierarchy:
-  enabled: false  # Set to true to enforce hierarchy-based group/day extraction
+  enabled: true  # Set to true to enforce hierarchy-based group/day extraction
   # Levels define the expected folder structure, from root to video file
   # Supported types: "string" (arbitrary folder name), "date" (ISO YYYY-MM-DD)
   levels:
@@ -39,7 +44,7 @@ hierarchy:
     - name: "day"
       type: "date"        # e.g., "2026-04-15"
   date_format: "YYYY-MM-DD"  # Expected date format for "day" level
-  fail_on_mixed_groups: true  # If true, error if videos from multiple groups in single run
+  fail_on_mixed_groups: false  # Allow multiple groups in the same run; outputs stay separated by group
   fail_on_invalid_date: true  # If true, error if date format doesn't match
 
 # Analytics: Configure trend analysis, metrics, and plotting

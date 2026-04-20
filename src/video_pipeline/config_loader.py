@@ -194,9 +194,19 @@ def _build_processing_config(section: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(active_motion_threshold, (int, float)) or not 0 <= float(active_motion_threshold) <= 1:
         raise ValueError("processing.active_motion_threshold must be a number between 0 and 1.")
 
+    compute_spatial_grid = config.get("compute_spatial_grid", False)
+    if not isinstance(compute_spatial_grid, bool):
+        raise ValueError("processing.compute_spatial_grid must be a boolean.")
+
+    spatial_grid_size = config.get("spatial_grid_size", 16)
+    if not isinstance(spatial_grid_size, int) or spatial_grid_size <= 0:
+        raise ValueError("processing.spatial_grid_size must be a positive integer.")
+
     config["diff_threshold"] = diff_threshold
     config["blur_kernel_size"] = blur_kernel_size
     config["active_motion_threshold"] = float(active_motion_threshold)
+    config["compute_spatial_grid"] = compute_spatial_grid
+    config["spatial_grid_size"] = spatial_grid_size
     return config
 
 

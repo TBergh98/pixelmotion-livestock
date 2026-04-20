@@ -316,3 +316,57 @@ def save_interday_metrics_json(metrics: InterDayMetrics, output_path: Path) -> N
         json.dump(data, f, indent=2)
     
     LOGGER.info(f"Inter-day metrics saved to {output_path}")
+
+
+def aggregate_spatial_grids_into_windows(
+    frame_records: list[dict[str, Any]],
+    window_seconds: int,
+    grid_size: int = 16,
+) -> dict[int, list[float]]:
+    """
+    Aggregate spatial grids from frame records into time windows.
+    
+    For each window, sums the density values across all frames in that window,
+    then normalizes to [0, 1] by dividing by the frame count.
+    
+    Args:
+        frame_records: List of frame records with timestamp_seconds and spatial_grid
+        window_seconds: Size of each window in seconds
+        grid_size: Grid dimensionality (e.g., 16 for 16x16 grid)
+        
+    Returns:
+        Dict mapping window_index to aggregated grid (list of grid_size^2 floats in [0, 1])
+    """
+    grid_cells = grid_size * grid_size
+    windows: dict[int, dict[str, Any]] = {}
+    
+    for record in frame_records:
+        timestamp = record.get("timestamp_seconds", 0)
+        spatial_grid = record.get("spatial_grid")
+        
+        if spatial_grid is None or not isinstance(spatial_grid, list):
+            continue
+        
+        window_index = int(timestamp // window_seconds)
+        if window_index not in windows:
+            windows[window_index] = {
+                "grid_sum": [0.0] * grid_cells,
+                "frame_count": 0,
+            }
+        
+        windows[window_index]["grid_sum"] = [
+            windows[window_index]["grid_sum"][i] + float(spatial_grid[i])
+            for i in range(min(len(spatial_grid), grid_cells))
+        ]
+        windows[window_index]["frame_count"] += 1
+    
+    # Normalize: average across frames in each window
+    result = {}
+    for window_index, data in windows.items():
+        frame_count = max(data["frame_count"], 1)
+        result[window_index] = [
+            round(cell_sum / frame_count, 6)
+            for cell_sum in data["grid_sum"]
+        ]
+    
+    return result
