@@ -81,6 +81,7 @@ Thumbs.db
 
 # Project data
 data/input/
+data/output/
 
 # Video files
 *.mp4
