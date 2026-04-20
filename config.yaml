@@ -32,6 +32,18 @@ logging:
   level: "INFO"
   progress_update_seconds: 30
 
+checkpoint:
+  enabled: true
+  # Relative paths are resolved under output.directory.
+  directory: "checkpoints"
+  # Save a running checkpoint every N processed frames (0 disables periodic saves).
+  # Segment boundary checkpoints are always saved.
+  save_every_frames: 5000
+  # Validate core processing/sampling parameters before resuming.
+  validate_config_snapshot: true
+  # Strict mode fails on checkpoint/output mismatches.
+  strict_resume: true
+
 # Hierarchy: Define folder structure for metadata extraction (e.g., group/day/video.mp4)
 # Enables automatic separation of analysis by group, preventing cross-group comparison
 hierarchy:

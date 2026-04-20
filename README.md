@@ -7,6 +7,7 @@ Pipeline Python + OpenCV per elaborare video lunghi in streaming, calcolare moti
 - Un JSONL per video con record frame-level e summary per segmento.
 - Un report finale: data/output/motility_report.json.
 - Se analytics e attivo: metriche e plot (PNG/HTML) separati per gruppo e giorno.
+- Checkpoint incrementali per resume affidabile su run lunghi.
 
 ## Quick Start
 
@@ -117,6 +118,27 @@ Analytics/hierarchy settings:
 - analytics.plots.intraday_heatmap — Spatial heatmap showing motion concentration
 - analytics.plots.interday_trend
 - analytics.plots.interday_delta
+
+Checkpoint settings:
+- checkpoint.enabled
+- checkpoint.directory
+- checkpoint.save_every_frames
+- checkpoint.validate_config_snapshot
+- checkpoint.strict_resume
+
+## Checkpoint and Resume
+
+Per run lunghi, la pipeline salva checkpoint incrementali (atomici) durante l'elaborazione video:
+
+- checkpoint periodico ogni `checkpoint.save_every_frames`
+- checkpoint a ogni cambio segmento
+- checkpoint finale con stato `video_completed`
+
+Alla ripartenza:
+
+- se trova un checkpoint `running`, ripristina stato statistico/sampling e riprende dal frame successivo
+- se trova un checkpoint `video_completed`, salta il video gia concluso
+- in `strict_resume=true`, la pipeline fallisce su mismatch critici (config snapshot o file output incoerenti)
 
 ## How Metrics Are Calculated
 

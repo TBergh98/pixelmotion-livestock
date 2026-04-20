@@ -9,6 +9,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .checkpointing import (
+    CHECKPOINT_VERSION,
+    build_checkpoint_path,
+    build_config_snapshot,
+    load_checkpoint,
+    running_stats_from_dict,
+    running_stats_to_dict,
+    save_checkpoint,
+    snapshots_match,
+)
 from .analytics import (
     IntraDayMetrics,
     aggregate_into_windows,
@@ -87,6 +97,138 @@ def _build_analytics_base_dir(config: AppConfig, group_id: str | None, recording
     group_key = _sanitize_path_component(group_id, "ungrouped")
     date_key = _sanitize_path_component(recording_date, "undated")
     return config.output.directory / config.analytics.output_subdir / group_key / date_key
+
+
+def _segment_state_to_payload(segment_state: SegmentState) -> dict[str, Any]:
+    return {
+        "segment_index": int(segment_state.segment_index),
+        "sampled_frames": int(segment_state.sampled_frames),
+        "motility_stats": running_stats_to_dict(segment_state.motility_stats),
+    }
+
+
+def _segment_state_from_payload(payload: dict[str, Any]) -> SegmentState:
+    return SegmentState(
+        segment_index=int(payload.get("segment_index", 0)),
+        sampled_frames=int(payload.get("sampled_frames", 0)),
+        motility_stats=running_stats_from_dict(dict(payload.get("motility_stats", {}))),
+    )
+
+
+def _restore_previous_sampled_frame(video_path: Path, target_frame_index: int) -> object | None:
+    if target_frame_index < 0:
+        return None
+
+    for frame_record in iter_video_frames(video_path):
+        if frame_record.frame_index == target_frame_index:
+            return frame_record.frame
+        if frame_record.frame_index > target_frame_index:
+            break
+    return None
+
+
+def _truncate_output_for_resume(output_file: Path, expected_size: int, strict_resume: bool) -> None:
+    if not output_file.exists():
+        if strict_resume:
+            raise FileNotFoundError(
+                f"Checkpoint expects output file for resume, but it does not exist: {output_file}"
+            )
+        return
+
+    current_size = output_file.stat().st_size
+    if current_size < expected_size:
+        if strict_resume:
+            raise RuntimeError(
+                f"Output file {output_file} is smaller than checkpointed size "
+                f"({current_size} < {expected_size})."
+            )
+        LOGGER.warning(
+            "Output file %s is smaller than checkpointed size (%d < %d); continuing due to non-strict resume.",
+            output_file,
+            current_size,
+            expected_size,
+        )
+        return
+
+    if current_size > expected_size:
+        LOGGER.info(
+            "Truncating %s from %d bytes to checkpointed size %d bytes before resume.",
+            output_file,
+            current_size,
+            expected_size,
+        )
+        with output_file.open("r+b") as handle:
+            handle.truncate(expected_size)
+
+
+def _save_running_checkpoint(
+    *,
+    checkpoint_path: Path,
+    config_snapshot: dict[str, Any],
+    video_path: Path,
+    output_file: Path,
+    group_id: str | None,
+    recording_date: str | None,
+    sampled_total: int,
+    last_frame_processed: int,
+    last_timestamp_processed: float,
+    last_written_frame_index: int | None,
+    previous_sampled_frame_index: int | None,
+    current_segment: SegmentState,
+    video_stats: RunningStats,
+    segment_reports: list[dict[str, Any]],
+    sampler: Sampler,
+) -> None:
+    save_checkpoint(
+        checkpoint_path,
+        {
+            "checkpoint_version": CHECKPOINT_VERSION,
+            "status": "running",
+            "video_path": str(video_path),
+            "group_id": group_id,
+            "recording_date": recording_date,
+            "output_jsonl": str(output_file),
+            "sampled_total": sampled_total,
+            "last_frame_processed": last_frame_processed,
+            "last_timestamp_processed": round(last_timestamp_processed, 6),
+            "last_written_frame_index": last_written_frame_index,
+            "previous_sampled_frame_index": previous_sampled_frame_index,
+            "current_segment": _segment_state_to_payload(current_segment),
+            "video_stats": running_stats_to_dict(video_stats),
+            "segment_reports": segment_reports,
+            "sampler_state": {
+                "next_sample_at_seconds": float(getattr(sampler, "_next_sample_at_seconds", 0.0))
+            },
+            "jsonl_size_bytes": output_file.stat().st_size if output_file.exists() else 0,
+            "config_snapshot": config_snapshot,
+        },
+    )
+
+
+def _save_completed_checkpoint(
+    *,
+    checkpoint_path: Path,
+    config_snapshot: dict[str, Any],
+    video_path: Path,
+    output_file: Path,
+    group_id: str | None,
+    recording_date: str | None,
+    video_report: dict[str, Any],
+) -> None:
+    save_checkpoint(
+        checkpoint_path,
+        {
+            "checkpoint_version": CHECKPOINT_VERSION,
+            "status": "video_completed",
+            "video_path": str(video_path),
+            "group_id": group_id,
+            "recording_date": recording_date,
+            "output_jsonl": str(output_file),
+            "jsonl_size_bytes": output_file.stat().st_size if output_file.exists() else 0,
+            "config_snapshot": config_snapshot,
+            "video_report": video_report,
+        },
+    )
 
 
 def _generate_intraday_artifacts(
@@ -286,6 +428,17 @@ def _flush_segment(
 def _process_video(video_path: Path, output_file: Path, config: AppConfig, group_id: str | None = None, recording_date: str | None = None) -> dict[str, Any]:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     metadata = get_video_metadata(video_path, group_id=group_id, recording_date=recording_date)
+    config_snapshot = build_config_snapshot(config)
+
+    checkpoint_path = build_checkpoint_path(
+        base_dir=config.checkpoint.directory,
+        video_path=video_path,
+        group_id=group_id,
+        recording_date=recording_date,
+    )
+    checkpoint_payload = None
+    if config.checkpoint.enabled:
+        checkpoint_payload = load_checkpoint(checkpoint_path)
 
     sampler = Sampler(
         every_n_frames=config.sampling.every_n_frames,
@@ -296,8 +449,66 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
     current_segment = SegmentState(segment_index=0, sampled_frames=0, motility_stats=RunningStats())
     sampled_total = 0
     previous_sampled_frame = None
+    previous_sampled_frame_index: int | None = None
     segment_reports: list[dict[str, Any]] = []
     video_stats = RunningStats()
+    last_frame_processed = -1
+    last_timestamp_processed = 0.0
+    last_written_frame_index: int | None = None
+    should_resume = False
+
+    if checkpoint_payload is not None and checkpoint_payload.get("status") == "running":
+        saved_snapshot = checkpoint_payload.get("config_snapshot", {})
+        if config.checkpoint.validate_config_snapshot and not snapshots_match(config_snapshot, dict(saved_snapshot)):
+            message = (
+                f"Checkpoint config mismatch for {video_path}. "
+                "Either clear checkpoints or restore the original processing/sampling settings."
+            )
+            if config.checkpoint.strict_resume:
+                raise RuntimeError(message)
+            LOGGER.warning(message)
+        else:
+            expected_output = checkpoint_payload.get("output_jsonl")
+            if isinstance(expected_output, str) and expected_output and Path(expected_output).resolve() != output_file.resolve():
+                raise RuntimeError(
+                    f"Checkpoint output mismatch for {video_path}: {expected_output} != {output_file}"
+                )
+
+            expected_size = int(checkpoint_payload.get("jsonl_size_bytes", 0))
+            _truncate_output_for_resume(output_file, expected_size, config.checkpoint.strict_resume)
+
+            sampled_total = int(checkpoint_payload.get("sampled_total", 0))
+            last_frame_processed = int(checkpoint_payload.get("last_frame_processed", -1))
+            last_timestamp_processed = float(checkpoint_payload.get("last_timestamp_processed", 0.0))
+            last_written_frame_index = checkpoint_payload.get("last_written_frame_index")
+
+            current_segment = _segment_state_from_payload(dict(checkpoint_payload.get("current_segment", {})))
+            video_stats = running_stats_from_dict(dict(checkpoint_payload.get("video_stats", {})))
+
+            restored_reports = checkpoint_payload.get("segment_reports", [])
+            if isinstance(restored_reports, list):
+                segment_reports = restored_reports
+
+            sampler_state = checkpoint_payload.get("sampler_state", {})
+            if isinstance(sampler_state, dict) and config.sampling.every_n_seconds is not None:
+                sampler._next_sample_at_seconds = float(sampler_state.get("next_sample_at_seconds", 0.0))
+
+            restored_prev_index = checkpoint_payload.get("previous_sampled_frame_index")
+            if isinstance(restored_prev_index, int):
+                previous_sampled_frame_index = restored_prev_index
+                previous_sampled_frame = _restore_previous_sampled_frame(video_path, restored_prev_index)
+                if previous_sampled_frame is None and config.checkpoint.strict_resume:
+                    raise RuntimeError(
+                        f"Unable to restore previous sampled frame {restored_prev_index} for {video_path}."
+                    )
+
+            should_resume = True
+            LOGGER.info(
+                "Resuming %s from frame %d (sampled_total=%d).",
+                video_path.name,
+                last_frame_processed,
+                sampled_total,
+            )
 
     diff_threshold = int(config.processing["diff_threshold"])
     blur_kernel_size = int(config.processing["blur_kernel_size"])
@@ -309,6 +520,7 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
     start_time = time.monotonic()
     last_progress_log_time = start_time
     frames_processed = 0
+    frames_since_checkpoint = 0
 
     LOGGER.info(
         "Processing video: %s | frames=%s | fps=%.3f | duration=%.1fs",
@@ -351,9 +563,14 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
 
         last_progress_log_time = now
 
-    with output_file.open("w", encoding="utf-8") as handle:
+    file_mode = "a" if should_resume else "w"
+    with output_file.open(file_mode, encoding="utf-8") as handle:
         for frame_record in iter_video_frames(video_path):
             frames_processed += 1
+
+            if frame_record.frame_index <= last_frame_processed:
+                continue
+
             segment_index = _segment_index_for_timestamp(config, frame_record.timestamp_seconds)
 
             if segment_index != current_segment.segment_index:
@@ -371,6 +588,27 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
                     motility_stats=RunningStats(),
                 )
                 previous_sampled_frame = None
+                previous_sampled_frame_index = None
+
+                if config.checkpoint.enabled:
+                    _save_running_checkpoint(
+                        checkpoint_path=checkpoint_path,
+                        config_snapshot=config_snapshot,
+                        video_path=video_path,
+                        output_file=output_file,
+                        group_id=group_id,
+                        recording_date=recording_date,
+                        sampled_total=sampled_total,
+                        last_frame_processed=last_frame_processed,
+                        last_timestamp_processed=last_timestamp_processed,
+                        last_written_frame_index=last_written_frame_index,
+                        previous_sampled_frame_index=previous_sampled_frame_index,
+                        current_segment=current_segment,
+                        video_stats=video_stats,
+                        segment_reports=segment_reports,
+                        sampler=sampler,
+                    )
+                    frames_since_checkpoint = 0
 
             if sampler.should_sample(frame_record.frame_index, frame_record.timestamp_seconds):
                 motility = None
@@ -413,6 +651,33 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
                 current_segment.sampled_frames += 1
                 sampled_total += 1
                 previous_sampled_frame = frame_record.frame
+                previous_sampled_frame_index = frame_record.frame_index
+                last_written_frame_index = frame_record.frame_index
+
+            last_frame_processed = frame_record.frame_index
+            last_timestamp_processed = frame_record.timestamp_seconds
+
+            if config.checkpoint.enabled and config.checkpoint.save_every_frames > 0:
+                frames_since_checkpoint += 1
+                if frames_since_checkpoint >= config.checkpoint.save_every_frames:
+                    _save_running_checkpoint(
+                        checkpoint_path=checkpoint_path,
+                        config_snapshot=config_snapshot,
+                        video_path=video_path,
+                        output_file=output_file,
+                        group_id=group_id,
+                        recording_date=recording_date,
+                        sampled_total=sampled_total,
+                        last_frame_processed=last_frame_processed,
+                        last_timestamp_processed=last_timestamp_processed,
+                        last_written_frame_index=last_written_frame_index,
+                        previous_sampled_frame_index=previous_sampled_frame_index,
+                        current_segment=current_segment,
+                        video_stats=video_stats,
+                        segment_reports=segment_reports,
+                        sampler=sampler,
+                    )
+                    frames_since_checkpoint = 0
 
             log_progress()
 
@@ -428,7 +693,7 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
     log_progress(force=True)
 
     LOGGER.info("Completed %s | sampled frames: %d | output: %s", video_path.name, sampled_total, output_file)
-    return {
+    report = {
         "video_name": video_path.name,
         "input_path": str(video_path),
         "output_jsonl": str(output_file),
@@ -438,6 +703,19 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
         "segments": segment_reports,
         "motility": summarize_running_stats(video_stats),
     }
+
+    if config.checkpoint.enabled:
+        _save_completed_checkpoint(
+            checkpoint_path=checkpoint_path,
+            config_snapshot=config_snapshot,
+            video_path=video_path,
+            output_file=output_file,
+            group_id=group_id,
+            recording_date=recording_date,
+            video_report=report,
+        )
+
+    return report
 
 
 def run_pipeline(config: AppConfig) -> None:
@@ -456,6 +734,24 @@ def run_pipeline(config: AppConfig) -> None:
             group_id=group_id,
             recording_date=recording_date,
         )
+
+        if config.checkpoint.enabled:
+            checkpoint_path = build_checkpoint_path(
+                base_dir=config.checkpoint.directory,
+                video_path=video_path,
+                group_id=group_id,
+                recording_date=recording_date,
+            )
+            checkpoint_payload = load_checkpoint(checkpoint_path)
+            if checkpoint_payload is not None and checkpoint_payload.get("status") == "video_completed":
+                output_jsonl = checkpoint_payload.get("output_jsonl")
+                if isinstance(output_jsonl, str) and Path(output_jsonl).exists():
+                    saved_report = checkpoint_payload.get("video_report")
+                    if isinstance(saved_report, dict):
+                        LOGGER.info("Skipping already completed video %s due to checkpoint.", video_path.name)
+                        reports.append(saved_report)
+                        continue
+
         report = _process_video(video_path=video_path, output_file=output_file, config=config, group_id=group_id, recording_date=recording_date)
         reports.append(report)
 

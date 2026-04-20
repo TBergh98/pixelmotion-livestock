@@ -2,6 +2,7 @@
 
 __all__ = [
     "cli",
+    "checkpointing",
     "config_loader",
     "logging_utils",
     "pipeline",

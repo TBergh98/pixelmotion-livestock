@@ -69,6 +69,15 @@ class AnalyticsConfig:
 
 
 @dataclass(frozen=True)
+class CheckpointConfig:
+    enabled: bool
+    directory: Path
+    save_every_frames: int
+    validate_config_snapshot: bool
+    strict_resume: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     input: InputConfig
     output: OutputConfig
@@ -78,6 +87,7 @@ class AppConfig:
     logging: LoggingConfig
     hierarchy: HierarchyConfig
     analytics: AnalyticsConfig
+    checkpoint: CheckpointConfig
 
 
 def _required_section(config: dict[str, Any], key: str) -> dict[str, Any]:
@@ -353,6 +363,40 @@ def _build_analytics_config(section: dict[str, Any]) -> AnalyticsConfig:
     )
 
 
+def _build_checkpoint_config(section: dict[str, Any], output_directory: Path) -> CheckpointConfig:
+    enabled = section.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("checkpoint.enabled must be a boolean.")
+
+    raw_directory = section.get("directory", "checkpoints")
+    if not isinstance(raw_directory, str) or not raw_directory.strip():
+        raise ValueError("checkpoint.directory must be a non-empty string.")
+
+    directory = Path(raw_directory).expanduser()
+    if not directory.is_absolute():
+        directory = (output_directory / directory).resolve()
+
+    save_every_frames = section.get("save_every_frames", 5000)
+    if not isinstance(save_every_frames, int) or save_every_frames < 0:
+        raise ValueError("checkpoint.save_every_frames must be an integer >= 0.")
+
+    validate_config_snapshot = section.get("validate_config_snapshot", True)
+    if not isinstance(validate_config_snapshot, bool):
+        raise ValueError("checkpoint.validate_config_snapshot must be a boolean.")
+
+    strict_resume = section.get("strict_resume", True)
+    if not isinstance(strict_resume, bool):
+        raise ValueError("checkpoint.strict_resume must be a boolean.")
+
+    return CheckpointConfig(
+        enabled=enabled,
+        directory=directory,
+        save_every_frames=save_every_frames,
+        validate_config_snapshot=validate_config_snapshot,
+        strict_resume=strict_resume,
+    )
+
+
 def load_config(config_path: str | Path) -> AppConfig:
     path = Path(config_path).expanduser().resolve()
     if not path.exists():
@@ -374,14 +418,18 @@ def load_config(config_path: str | Path) -> AppConfig:
     logging_section = _required_section(payload, "logging")
     hierarchy_section = _optional_section(payload, "hierarchy")
     analytics_section = _optional_section(payload, "analytics")
+    checkpoint_section = _optional_section(payload, "checkpoint")
+
+    output_config = _build_output_config(output_section, config_dir)
 
     return AppConfig(
         input=_build_input_config(input_section, config_dir),
-        output=_build_output_config(output_section, config_dir),
+        output=output_config,
         segmentation=_build_segmentation_config(segmentation_section),
         sampling=_build_sampling_config(sampling_section),
         processing=_build_processing_config(processing_section),
         logging=_build_logging_config(logging_section),
         hierarchy=_build_hierarchy_config(hierarchy_section),
         analytics=_build_analytics_config(analytics_section),
+        checkpoint=_build_checkpoint_config(checkpoint_section, output_config.directory),
     )
