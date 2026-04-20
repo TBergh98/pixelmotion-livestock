@@ -78,6 +78,13 @@ class CheckpointConfig:
 
 
 @dataclass(frozen=True)
+class ParallelismConfig:
+    enabled: bool
+    video_workers: int
+    analytics_workers: int
+
+
+@dataclass(frozen=True)
 class AppConfig:
     input: InputConfig
     output: OutputConfig
@@ -88,6 +95,7 @@ class AppConfig:
     hierarchy: HierarchyConfig
     analytics: AnalyticsConfig
     checkpoint: CheckpointConfig
+    parallelism: ParallelismConfig
 
 
 def _required_section(config: dict[str, Any], key: str) -> dict[str, Any]:
@@ -397,6 +405,26 @@ def _build_checkpoint_config(section: dict[str, Any], output_directory: Path) ->
     )
 
 
+def _build_parallelism_config(section: dict[str, Any]) -> ParallelismConfig:
+    enabled = section.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError("parallelism.enabled must be a boolean.")
+
+    video_workers = section.get("video_workers", 0)
+    if not isinstance(video_workers, int) or video_workers < 0:
+        raise ValueError("parallelism.video_workers must be an integer >= 0.")
+
+    analytics_workers = section.get("analytics_workers", 0)
+    if not isinstance(analytics_workers, int) or analytics_workers < 0:
+        raise ValueError("parallelism.analytics_workers must be an integer >= 0.")
+
+    return ParallelismConfig(
+        enabled=enabled,
+        video_workers=video_workers,
+        analytics_workers=analytics_workers,
+    )
+
+
 def load_config(config_path: str | Path) -> AppConfig:
     path = Path(config_path).expanduser().resolve()
     if not path.exists():
@@ -419,6 +447,7 @@ def load_config(config_path: str | Path) -> AppConfig:
     hierarchy_section = _optional_section(payload, "hierarchy")
     analytics_section = _optional_section(payload, "analytics")
     checkpoint_section = _optional_section(payload, "checkpoint")
+    parallelism_section = _optional_section(payload, "parallelism")
 
     output_config = _build_output_config(output_section, config_dir)
 
@@ -432,4 +461,5 @@ def load_config(config_path: str | Path) -> AppConfig:
         hierarchy=_build_hierarchy_config(hierarchy_section),
         analytics=_build_analytics_config(analytics_section),
         checkpoint=_build_checkpoint_config(checkpoint_section, output_config.directory),
+        parallelism=_build_parallelism_config(parallelism_section),
     )

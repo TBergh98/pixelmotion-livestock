@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +59,15 @@ class SegmentState:
     motility_stats: RunningStats
 
 
+@dataclass(frozen=True)
+class VideoJob:
+    order_index: int
+    video_path: Path
+    output_file: Path
+    group_id: str | None
+    recording_date: str | None
+
+
 class Sampler:
     def __init__(self, every_n_frames: int | None, every_n_seconds: float | None) -> None:
         self._every_n_frames = every_n_frames
@@ -97,6 +108,27 @@ def _build_analytics_base_dir(config: AppConfig, group_id: str | None, recording
     group_key = _sanitize_path_component(group_id, "ungrouped")
     date_key = _sanitize_path_component(recording_date, "undated")
     return config.output.directory / config.analytics.output_subdir / group_key / date_key
+
+
+def _resolve_worker_count(configured_workers: int, task_count: int, default_cap: int) -> int:
+    if task_count <= 1:
+        return 1
+
+    if configured_workers > 0:
+        return max(1, min(configured_workers, task_count))
+
+    return max(1, min(default_cap, task_count))
+
+
+def _process_video_job(config: AppConfig, job: VideoJob) -> tuple[int, dict[str, Any]]:
+    report = _process_video(
+        video_path=job.video_path,
+        output_file=job.output_file,
+        config=config,
+        group_id=job.group_id,
+        recording_date=job.recording_date,
+    )
+    return job.order_index, report
 
 
 def _segment_state_to_payload(segment_state: SegmentState) -> dict[str, Any]:
@@ -371,8 +403,29 @@ def _generate_interday_artifacts(config: AppConfig, group_key: str, daily_metric
 def _run_analytics(config: AppConfig, reports: list[dict[str, Any]]) -> dict[str, Any]:
     grouped_daily_metrics: dict[str, list[IntraDayMetrics]] = defaultdict(list)
 
-    for report in reports:
-        intraday = _generate_intraday_artifacts(config=config, report=report)
+    analytics_start = time.monotonic()
+    default_analytics_cap = min(4, max(1, os.cpu_count() or 1))
+    analytics_workers = 1
+    if config.parallelism.enabled:
+        analytics_workers = _resolve_worker_count(
+            configured_workers=config.parallelism.analytics_workers,
+            task_count=len(reports),
+            default_cap=default_analytics_cap,
+        )
+
+    if analytics_workers > 1:
+        LOGGER.info("Running intraday analytics with %d worker threads.", analytics_workers)
+        with ThreadPoolExecutor(max_workers=analytics_workers) as executor:
+            intraday_results = list(
+                executor.map(
+                    lambda item: _generate_intraday_artifacts(config=config, report=item),
+                    reports,
+                )
+            )
+    else:
+        intraday_results = [_generate_intraday_artifacts(config=config, report=report) for report in reports]
+
+    for intraday in intraday_results:
         if intraday is None:
             continue
         group_key = _sanitize_path_component(intraday.group_id, "ungrouped")
@@ -386,6 +439,7 @@ def _run_analytics(config: AppConfig, reports: list[dict[str, Any]]) -> dict[str
             daily_metrics=daily_metrics,
         )
 
+    LOGGER.info("Analytics completed in %.2fs for %d video report(s).", time.monotonic() - analytics_start, len(reports))
     return summary
 
 
@@ -692,7 +746,15 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
 
     log_progress(force=True)
 
-    LOGGER.info("Completed %s | sampled frames: %d | output: %s", video_path.name, sampled_total, output_file)
+    elapsed_seconds = max(time.monotonic() - start_time, 0.001)
+    LOGGER.info(
+        "Completed %s | sampled frames: %d | elapsed=%.2fs | sampled_fps=%.2f | output: %s",
+        video_path.name,
+        sampled_total,
+        elapsed_seconds,
+        sampled_total / elapsed_seconds,
+        output_file,
+    )
     report = {
         "video_name": video_path.name,
         "input_path": str(video_path),
@@ -719,6 +781,7 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
 
 
 def run_pipeline(config: AppConfig) -> None:
+    pipeline_start = time.monotonic()
     videos = discover_videos(config.input, config.hierarchy)
     if not videos:
         LOGGER.warning("No videos found under configured input path: %s", config.input.path)
@@ -726,8 +789,10 @@ def run_pipeline(config: AppConfig) -> None:
 
     LOGGER.info("Discovered %d video(s).", len(videos))
 
-    reports: list[dict[str, Any]] = []
-    for video_path, group_id, recording_date in videos:
+    ordered_reports: dict[int, dict[str, Any]] = {}
+    pending_jobs: list[VideoJob] = []
+
+    for order_index, (video_path, group_id, recording_date) in enumerate(videos):
         output_file = _build_video_output_path(
             config=config,
             video_path=video_path,
@@ -749,11 +814,44 @@ def run_pipeline(config: AppConfig) -> None:
                     saved_report = checkpoint_payload.get("video_report")
                     if isinstance(saved_report, dict):
                         LOGGER.info("Skipping already completed video %s due to checkpoint.", video_path.name)
-                        reports.append(saved_report)
+                        ordered_reports[order_index] = saved_report
                         continue
 
-        report = _process_video(video_path=video_path, output_file=output_file, config=config, group_id=group_id, recording_date=recording_date)
-        reports.append(report)
+        pending_jobs.append(
+            VideoJob(
+                order_index=order_index,
+                video_path=video_path,
+                output_file=output_file,
+                group_id=group_id,
+                recording_date=recording_date,
+            )
+        )
+
+    default_video_cap = max(1, (os.cpu_count() or 1) - 1)
+    video_workers = 1
+    if config.parallelism.enabled:
+        video_workers = _resolve_worker_count(
+            configured_workers=config.parallelism.video_workers,
+            task_count=len(pending_jobs),
+            default_cap=default_video_cap,
+        )
+
+    if video_workers > 1 and pending_jobs:
+        LOGGER.info("Processing %d video(s) with %d worker processes.", len(pending_jobs), video_workers)
+        with ProcessPoolExecutor(max_workers=video_workers) as executor:
+            future_by_job = {
+                executor.submit(_process_video_job, config, job): job
+                for job in pending_jobs
+            }
+            for future in as_completed(future_by_job):
+                order_index, report = future.result()
+                ordered_reports[order_index] = report
+    else:
+        for job in pending_jobs:
+            order_index, report = _process_video_job(config, job)
+            ordered_reports[order_index] = report
+
+    reports: list[dict[str, Any]] = [ordered_reports[index] for index in sorted(ordered_reports.keys())]
 
     report_payload: dict[str, Any] = {"videos": reports}
     if config.analytics.enabled:
@@ -764,3 +862,4 @@ def run_pipeline(config: AppConfig) -> None:
     report_file.parent.mkdir(parents=True, exist_ok=True)
     report_file.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
     LOGGER.info("Motility report written to: %s", report_file)
+    LOGGER.info("Pipeline completed in %.2fs.", time.monotonic() - pipeline_start)

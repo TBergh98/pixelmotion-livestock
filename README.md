@@ -126,6 +126,11 @@ Checkpoint settings:
 - checkpoint.validate_config_snapshot
 - checkpoint.strict_resume
 
+Parallelism settings:
+- parallelism.enabled
+- parallelism.video_workers (0 = auto)
+- parallelism.analytics_workers (0 = auto)
+
 ## Checkpoint and Resume
 
 Per run lunghi, la pipeline salva checkpoint incrementali (atomici) durante l'elaborazione video:
