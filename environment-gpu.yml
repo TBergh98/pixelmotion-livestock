@@ -1,0 +1,19 @@
+name: pixelmotion-livestock-gpu
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - git
+  - cmake
+  - ninja
+  - numpy
+  - pyyaml
+  - matplotlib
+  - pip
+  - pip:
+      - plotly>=5.22.0
+
+# This environment intentionally does not install OpenCV from conda or pip.
+# Use scripts/build_opencv_cuda.ps1 after creating the environment so the
+# cv2 module is built locally with CUDA support.

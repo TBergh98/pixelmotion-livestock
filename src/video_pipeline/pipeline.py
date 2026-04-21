@@ -308,8 +308,10 @@ def _prompt_cpu_fallback_for_gpu(reason: str) -> bool:
         return True
 
     prompt = (
-        "La GPU non e' disponibile o il test iniziale e' fallito:\n"
+        "La GPU non e' disponibile o il test iniziale e' fallito.\n"
         f"{reason}\n\n"
+        "Per usare la GPU serve una build OpenCV con CUDA.\n"
+        "Puoi creare la build con scripts\\build_opencv_cuda.ps1 e poi rilanciare il run.\n\n"
         "Premi Invio per continuare con la CPU.\n"
         "Digita 2 per interrompere e sistemare il sistema per usare la GPU.\n"
         "Scelta: "
