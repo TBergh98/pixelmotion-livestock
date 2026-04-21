@@ -7,6 +7,7 @@ Produces both static (PNG) and interactive (HTML) plots with descriptive metrics
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,8 @@ def plot_intraday_timeseries(
     group_id: str | None,
     recording_date: str | None,
     output_dir: Path,
+    x_max_hours: float | None = None,
+    y_limits: tuple[float, float] | None = None,
     generate_png: bool = True,
     generate_html: bool = False,
 ) -> tuple[Path | None, Path | None]:
@@ -84,6 +87,10 @@ def plot_intraday_timeseries(
                 ax.set_xlabel('Time of Day (hours)', fontsize=11)
                 ax.set_ylabel('Motility Score', fontsize=11)
                 ax.set_title(f'Intra-day Motility Trend - {group_str} ({date_str})', fontsize=13)
+                if x_max_hours is not None and x_max_hours > 0:
+                    ax.set_xlim(0, x_max_hours)
+                if y_limits is not None:
+                    ax.set_ylim(y_limits[0], y_limits[1])
                 ax.legend()
                 ax.grid(True, alpha=0.3)
                 png_path = output_dir / f"intraday_timeseries_{date_str}_{group_str}.png"
@@ -102,6 +109,10 @@ def plot_intraday_timeseries(
                     xaxis_title='Time of Day (hours)',
                     yaxis_title='Motility Score',
                 )
+                if x_max_hours is not None and x_max_hours > 0:
+                    figure.update_xaxes(range=[0, x_max_hours])
+                if y_limits is not None:
+                    figure.update_yaxes(range=[y_limits[0], y_limits[1]])
                 html_path = output_dir / f"intraday_timeseries_{date_str}_{group_str}.html"
                 figure.write_html(str(html_path), include_plotlyjs='cdn')
                 LOGGER.info("Saved HTML plot to %s", html_path)
@@ -118,6 +129,8 @@ def plot_intraday_distribution(
     group_id: str | None,
     recording_date: str | None,
     output_dir: Path,
+    x_max_windows: int | None = None,
+    y_limits: tuple[float, float] | None = None,
     generate_png: bool = True,
     generate_html: bool = False,
 ) -> tuple[Path | None, Path | None]:
@@ -137,10 +150,29 @@ def plot_intraday_distribution(
         if generate_png:
             plt = _import_matplotlib()
             if plt is not None:
-                fig, ax = plt.subplots(figsize=(14, 6))
-                boxplot = ax.boxplot(data_list, tick_labels=labels, patch_artist=True)
+                total_windows = len(window_indices)
+                fig_width = max(14, min(24, 8 + total_windows * 0.35))
+                fig, ax = plt.subplots(figsize=(fig_width, 6))
+
+                positions = list(range(1, total_windows + 1))
+                axis_window_count = max(total_windows, x_max_windows or total_windows)
+                boxplot = ax.boxplot(data_list, positions=positions, patch_artist=True)
                 for patch in boxplot['boxes']:
                     patch.set_facecolor('lightblue')
+
+                # Keep all boxplots, but show only a readable subset of x tick labels.
+                max_visible_labels = 16
+                tick_step = max(1, math.ceil(axis_window_count / max_visible_labels))
+                visible_positions = list(range(1, axis_window_count + 1, tick_step))
+                if visible_positions[-1] != axis_window_count:
+                    visible_positions.append(axis_window_count)
+                visible_labels = [f"{((pos - 1) * window_duration_seconds) / 3600:.2f}h" for pos in visible_positions]
+
+                ax.set_xticks(visible_positions)
+                ax.set_xticklabels(visible_labels, rotation=45, ha='right')
+                ax.set_xlim(0.5, axis_window_count + 0.5)
+                if y_limits is not None:
+                    ax.set_ylim(y_limits[0], y_limits[1])
                 ax.set_xlabel('Time Window', fontsize=11)
                 ax.set_ylabel('Motility Score', fontsize=11)
                 ax.set_title(f'Intra-day Distribution by Window - {group_str} ({date_str})', fontsize=13)
@@ -162,6 +194,14 @@ def plot_intraday_distribution(
                         y_values.append(value)
                 figure = px.box(x=x_labels, y=y_values, labels={"x": "Time Window", "y": "Motility Score"})
                 figure.update_layout(title=f'Intra-day Distribution by Window - {group_str} ({date_str})')
+                if x_max_windows is not None and x_max_windows > 0:
+                    category_labels = [
+                        f"{(idx * window_duration_seconds) / 3600:.2f}h"
+                        for idx in range(x_max_windows)
+                    ]
+                    figure.update_xaxes(categoryorder='array', categoryarray=category_labels)
+                if y_limits is not None:
+                    figure.update_yaxes(range=[y_limits[0], y_limits[1]])
                 html_path = output_dir / f"intraday_distribution_{date_str}_{group_str}.html"
                 figure.write_html(str(html_path), include_plotlyjs='cdn')
                 LOGGER.info("Saved HTML distribution plot to %s", html_path)

@@ -8,6 +8,7 @@ from .config_loader import load_config
 from .logging_utils import configure_logging
 from .pipeline import run_pipeline
 from .plot_collage import run_from_cli as run_plot_collage
+from .replot import run_from_cli as run_replot
 
 LOGGER = logging.getLogger(__name__)
 
@@ -70,6 +71,58 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable PDF export.",
     )
 
+    replot_parser = subparsers.add_parser(
+        "replot",
+        help="Regenerate analytics plots from existing results JSONL files (no video reprocessing).",
+    )
+    replot_parser.add_argument(
+        "--config",
+        required=True,
+        help="Path to config.yaml",
+    )
+    replot_parser.add_argument(
+        "--groups",
+        default="",
+        help="Comma-separated list of groups to include (default: all groups).",
+    )
+    replot_parser.add_argument(
+        "--dates",
+        default="",
+        help="Comma-separated list of recording dates (YYYY-MM-DD) to include.",
+    )
+    replot_parser.add_argument(
+        "--plot-types",
+        default="intraday_timeseries,intraday_distribution,spatial_heatmap,interday_trend,interday_delta",
+        help="Comma-separated plot types to regenerate.",
+    )
+    replot_parser.add_argument(
+        "--include-html",
+        action="store_true",
+        help="Also regenerate HTML plots when enabled in config (disabled by default).",
+    )
+    replot_parser.add_argument(
+        "--skip-collages",
+        action="store_true",
+        help="Do not regenerate aggregated intraday collage outputs.",
+    )
+    replot_parser.add_argument(
+        "--collage-output-dirname",
+        default="composites",
+        help="Output subfolder name for regenerated collages inside each analytics group folder.",
+    )
+    replot_parser.add_argument(
+        "--collage-max-height-px",
+        type=int,
+        default=20000,
+        help="Max collage canvas height before auto-switching to 2 columns.",
+    )
+    replot_parser.add_argument(
+        "--collage-heatmap-layout",
+        choices=["auto", "vertical", "horizontal"],
+        default="auto",
+        help="Layout strategy for spatial heatmap collages.",
+    )
+
     return parser
 
 
@@ -77,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     raw_args = list(argv) if argv is not None else list(sys.argv[1:])
     if not raw_args:
         raw_args = ["run"]
-    elif raw_args[0] not in {"run", "aggregate-plots", "-h", "--help"}:
+    elif raw_args[0] not in {"run", "aggregate-plots", "replot", "-h", "--help"}:
         # Backward compatibility: allow legacy invocation without explicit subcommand.
         raw_args = ["run", *raw_args]
 
@@ -87,6 +140,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "aggregate-plots":
             configure_logging("INFO")
             return run_plot_collage(args)
+
+        if args.command == "replot":
+            config = load_config(args.config)
+            configure_logging(config.logging.level)
+            args._loaded_config = config
+            return run_replot(args)
 
         config = load_config(args.config)
         configure_logging(config.logging.level)

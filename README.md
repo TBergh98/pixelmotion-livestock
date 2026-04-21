@@ -65,6 +65,31 @@ Layout rules:
 - If the image gets too tall, it automatically switches to 2 columns.
 - Heatmaps can be `auto`, `vertical`, or `horizontal` via `--heatmap-layout`.
 
+Regenerate analytics plots from existing `results/*.jsonl` files (no video reprocessing):
+
+```bash
+python -m src.video_pipeline.cli replot --config ./config.yaml
+```
+
+By default, `replot` also regenerates intraday aggregated collages (PNG + PDF) in each group's `composites` folder.
+It keeps intraday `timeseries` and `distribution` axes comparable across days within the same group by using a shared X/Y scale.
+
+Examples:
+
+```bash
+# Regenerate only intraday distribution plots
+python -m src.video_pipeline.cli replot --config ./config.yaml --plot-types intraday_distribution
+
+# Restrict to specific groups and dates
+python -m src.video_pipeline.cli replot --config ./config.yaml --groups GroupA --dates 2026-03-14,2026-03-15
+
+# Enable HTML regeneration as well (optional)
+python -m src.video_pipeline.cli replot --config ./config.yaml --plot-types intraday_distribution --include-html
+
+# Regenerate plots but skip aggregated collages
+python -m src.video_pipeline.cli replot --config ./config.yaml --skip-collages
+```
+
 ## GPU Build on Windows
 
 The default [environment.yml](environment.yml) is a CPU-oriented setup. To build OpenCV with CUDA support, use [environment-gpu.yml](environment-gpu.yml) and then run [scripts/build_opencv_cuda.ps1](scripts/build_opencv_cuda.ps1).
