@@ -85,6 +85,13 @@ class ParallelismConfig:
 
 
 @dataclass(frozen=True)
+class PipelineConfig:
+    continue_on_video_error: bool
+    video_open_retries: int
+    retry_backoff_seconds: float
+
+
+@dataclass(frozen=True)
 class AppConfig:
     input: InputConfig
     output: OutputConfig
@@ -96,6 +103,7 @@ class AppConfig:
     analytics: AnalyticsConfig
     checkpoint: CheckpointConfig
     parallelism: ParallelismConfig
+    pipeline: PipelineConfig
 
 
 def _required_section(config: dict[str, Any], key: str) -> dict[str, Any]:
@@ -425,6 +433,26 @@ def _build_parallelism_config(section: dict[str, Any]) -> ParallelismConfig:
     )
 
 
+def _build_pipeline_config(section: dict[str, Any]) -> PipelineConfig:
+    continue_on_video_error = section.get("continue_on_video_error", True)
+    if not isinstance(continue_on_video_error, bool):
+        raise ValueError("pipeline.continue_on_video_error must be a boolean.")
+
+    video_open_retries = section.get("video_open_retries", 2)
+    if not isinstance(video_open_retries, int) or video_open_retries < 0:
+        raise ValueError("pipeline.video_open_retries must be an integer >= 0.")
+
+    retry_backoff_seconds = section.get("retry_backoff_seconds", 1.0)
+    if not isinstance(retry_backoff_seconds, (int, float)) or float(retry_backoff_seconds) < 0:
+        raise ValueError("pipeline.retry_backoff_seconds must be a number >= 0.")
+
+    return PipelineConfig(
+        continue_on_video_error=continue_on_video_error,
+        video_open_retries=video_open_retries,
+        retry_backoff_seconds=float(retry_backoff_seconds),
+    )
+
+
 def load_config(config_path: str | Path) -> AppConfig:
     path = Path(config_path).expanduser().resolve()
     if not path.exists():
@@ -448,6 +476,7 @@ def load_config(config_path: str | Path) -> AppConfig:
     analytics_section = _optional_section(payload, "analytics")
     checkpoint_section = _optional_section(payload, "checkpoint")
     parallelism_section = _optional_section(payload, "parallelism")
+    pipeline_section = _optional_section(payload, "pipeline")
 
     output_config = _build_output_config(output_section, config_dir)
 
@@ -462,4 +491,5 @@ def load_config(config_path: str | Path) -> AppConfig:
         analytics=_build_analytics_config(analytics_section),
         checkpoint=_build_checkpoint_config(checkpoint_section, output_config.directory),
         parallelism=_build_parallelism_config(parallelism_section),
+        pipeline=_build_pipeline_config(pipeline_section),
     )

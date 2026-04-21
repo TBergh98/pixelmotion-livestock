@@ -51,6 +51,14 @@ parallelism:
   # 0 = auto (max 4). Keep low because plotting is heavy and can contend on resources.
   analytics_workers: 4
 
+pipeline:
+  # If true, one failed video does not stop the whole run.
+  continue_on_video_error: true
+  # Extra attempts after first failure while opening/processing a video.
+  video_open_retries: 2
+  # Base delay in seconds between retries (exponential backoff).
+  retry_backoff_seconds: 1.0
+
 # Hierarchy: Define folder structure for metadata extraction (e.g., group/day/video.mp4)
 # Enables automatic separation of analysis by group, preventing cross-group comparison
 hierarchy:

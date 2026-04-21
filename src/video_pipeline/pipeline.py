@@ -131,6 +131,49 @@ def _process_video_job(config: AppConfig, job: VideoJob) -> tuple[int, dict[str,
     return job.order_index, report
 
 
+def _process_video_job_with_retry(config: AppConfig, job: VideoJob) -> tuple[int, dict[str, Any]]:
+    max_attempts = 1 + max(0, config.pipeline.video_open_retries)
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _process_video_job(config=config, job=job)
+        except Exception as exc:
+            if attempt >= max_attempts:
+                raise
+
+            backoff_seconds = config.pipeline.retry_backoff_seconds * (2 ** (attempt - 1))
+            LOGGER.warning(
+                "Video %s failed at attempt %d/%d: %s. Retrying in %.2fs.",
+                job.video_path,
+                attempt,
+                max_attempts,
+                exc,
+                backoff_seconds,
+            )
+            if backoff_seconds > 0:
+                time.sleep(backoff_seconds)
+
+
+def _build_failed_video_report(job: VideoJob, exc: Exception, attempts: int) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "video_name": job.video_path.name,
+        "input_path": str(job.video_path),
+        "output_jsonl": None,
+        "group_id": job.group_id,
+        "recording_date": job.recording_date,
+        "attempts": attempts,
+        "error": str(exc),
+    }
+
+
+def _is_analytics_eligible(report: dict[str, Any]) -> bool:
+    output_jsonl = report.get("output_jsonl")
+    if not isinstance(output_jsonl, str) or not output_jsonl.strip():
+        return False
+    return Path(output_jsonl).exists()
+
+
 def _segment_state_to_payload(segment_state: SegmentState) -> dict[str, Any]:
     return {
         "segment_index": int(segment_state.segment_index),
@@ -267,7 +310,19 @@ def _generate_intraday_artifacts(
     config: AppConfig,
     report: dict[str, Any],
 ) -> IntraDayMetrics | None:
-    jsonl_path = Path(report["output_jsonl"])
+    output_jsonl = report.get("output_jsonl")
+    if not isinstance(output_jsonl, str) or not output_jsonl.strip():
+        LOGGER.info(
+            "Skipping analytics for %s: missing output_jsonl.",
+            report.get("video_name", "unknown"),
+        )
+        return None
+
+    jsonl_path = Path(output_jsonl)
+    if not jsonl_path.exists():
+        LOGGER.warning("Skipping analytics for %s: output JSONL not found.", jsonl_path)
+        return None
+
     frame_records = load_frame_data_from_jsonl(jsonl_path)
     if not frame_records:
         LOGGER.warning("Skipping analytics for %s: no frame-level motility records.", jsonl_path)
@@ -756,6 +811,7 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
         output_file,
     )
     report = {
+        "status": "completed",
         "video_name": video_path.name,
         "input_path": str(video_path),
         "output_jsonl": str(output_file),
@@ -840,23 +896,58 @@ def run_pipeline(config: AppConfig) -> None:
         LOGGER.info("Processing %d video(s) with %d worker processes.", len(pending_jobs), video_workers)
         with ProcessPoolExecutor(max_workers=video_workers) as executor:
             future_by_job = {
-                executor.submit(_process_video_job, config, job): job
+                executor.submit(_process_video_job_with_retry, config, job): job
                 for job in pending_jobs
             }
             for future in as_completed(future_by_job):
-                order_index, report = future.result()
-                ordered_reports[order_index] = report
+                job = future_by_job[future]
+                try:
+                    order_index, report = future.result()
+                    ordered_reports[order_index] = report
+                except Exception as exc:
+                    if not config.pipeline.continue_on_video_error:
+                        raise
+
+                    LOGGER.exception("Video processing failed for %s", job.video_path)
+                    ordered_reports[job.order_index] = _build_failed_video_report(
+                        job=job,
+                        exc=exc,
+                        attempts=1 + max(0, config.pipeline.video_open_retries),
+                    )
     else:
         for job in pending_jobs:
-            order_index, report = _process_video_job(config, job)
-            ordered_reports[order_index] = report
+            try:
+                order_index, report = _process_video_job_with_retry(config, job)
+                ordered_reports[order_index] = report
+            except Exception as exc:
+                if not config.pipeline.continue_on_video_error:
+                    raise
+
+                LOGGER.exception("Video processing failed for %s", job.video_path)
+                ordered_reports[job.order_index] = _build_failed_video_report(
+                    job=job,
+                    exc=exc,
+                    attempts=1 + max(0, config.pipeline.video_open_retries),
+                )
 
     reports: list[dict[str, Any]] = [ordered_reports[index] for index in sorted(ordered_reports.keys())]
+    successful_reports = [report for report in reports if _is_analytics_eligible(report)]
+    failed_reports = [report for report in reports if report.get("status") == "failed"]
 
-    report_payload: dict[str, Any] = {"videos": reports}
-    if config.analytics.enabled:
+    report_payload: dict[str, Any] = {
+        "summary": {
+            "total_videos": len(reports),
+            "successful_videos": len(successful_reports),
+            "failed_videos": len(failed_reports),
+        },
+        "failed_video_reports": failed_reports,
+        "videos": reports,
+    }
+    if config.analytics.enabled and successful_reports:
         LOGGER.info("Analytics enabled: generating metrics and plots.")
-        report_payload["analytics"] = _run_analytics(config=config, reports=reports)
+        report_payload["analytics"] = _run_analytics(config=config, reports=successful_reports)
+    elif config.analytics.enabled:
+        LOGGER.warning("Analytics enabled but no valid video outputs are available.")
 
     report_file = config.output.directory / "motility_report.json"
     report_file.parent.mkdir(parents=True, exist_ok=True)

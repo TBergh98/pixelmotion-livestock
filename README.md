@@ -131,6 +131,11 @@ Parallelism settings:
 - parallelism.video_workers (0 = auto)
 - parallelism.analytics_workers (0 = auto)
 
+Pipeline resilience settings:
+- pipeline.continue_on_video_error
+- pipeline.video_open_retries
+- pipeline.retry_backoff_seconds
+
 ## Checkpoint and Resume
 
 Per run lunghi, la pipeline salva checkpoint incrementali (atomici) durante l'elaborazione video:
