@@ -22,6 +22,7 @@ processing:
   diff_threshold: 25
   blur_kernel_size: 5
   active_motion_threshold: 0.02
+  gpu_acceleration: true
   
   # Spatial heatmap: divide each frame into a grid and compute motion density per cell
   # Set compute_spatial_grid to true to enable; grids are stored in JSONL records

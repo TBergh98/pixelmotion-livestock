@@ -4,6 +4,7 @@ import json
 import logging
 import multiprocessing
 import os
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -43,6 +44,7 @@ from .plotting import (
     plot_spatial_heatmap,
 )
 from .processor import (
+    probe_gpu_acceleration,
     RunningStats,
     compute_motility,
     process_frame,
@@ -298,6 +300,55 @@ def _resolve_worker_count(configured_workers: int, task_count: int, default_cap:
         return max(1, min(configured_workers, task_count))
 
     return max(1, min(default_cap, task_count))
+
+
+def _prompt_cpu_fallback_for_gpu(reason: str) -> bool:
+    if not sys.stdin.isatty():
+        LOGGER.warning("Nessun terminale interattivo disponibile; continuo con la CPU.")
+        return True
+
+    prompt = (
+        "La GPU non e' disponibile o il test iniziale e' fallito:\n"
+        f"{reason}\n\n"
+        "Premi Invio per continuare con la CPU.\n"
+        "Digita 2 per interrompere e sistemare il sistema per usare la GPU.\n"
+        "Scelta: "
+    )
+
+    while True:
+        try:
+            answer = input(prompt).strip().lower()
+        except EOFError:
+            LOGGER.warning("Nessun terminale interattivo disponibile; continuo con la CPU.")
+            return True
+
+        if answer in {"", "1", "cpu", "c", "si", "s", "sì", "yes", "y"}:
+            return True
+        if answer in {"2", "gpu", "n", "no"}:
+            return False
+
+        print("Risposta non valida. Premi Invio per CPU oppure 2 per interrompere.")
+
+
+def _resolve_gpu_acceleration(config: AppConfig) -> bool:
+    requested = bool(config.processing.get("gpu_acceleration", True))
+    if not requested:
+        return False
+
+    blur_kernel_size = int(config.processing["blur_kernel_size"])
+    gpu_ready, reason = probe_gpu_acceleration(blur_kernel_size=blur_kernel_size)
+    if gpu_ready:
+        LOGGER.info("GPU acceleration enabled after startup probe.")
+        return True
+
+    if _prompt_cpu_fallback_for_gpu(reason):
+        LOGGER.warning("Continuing with CPU because the GPU probe failed: %s", reason)
+        return False
+
+    raise RuntimeError(
+        "GPU acceleration was requested but the startup probe failed. "
+        f"Reason: {reason}"
+    )
 
 
 def _process_video_job(config: AppConfig, job: VideoJob, progress_queue: Any | None = None) -> tuple[int, dict[str, Any]]:
@@ -829,6 +880,7 @@ def _process_video(
     blur_kernel_size = int(config.processing["blur_kernel_size"])
     active_motion_threshold = float(config.processing["active_motion_threshold"])
     compute_spatial_grid = bool(config.processing.get("compute_spatial_grid", False))
+    gpu_acceleration = bool(config.processing.get("gpu_acceleration", False))
     spatial_grid_size = int(config.processing.get("spatial_grid_size", 16))
     progress_interval_seconds = float(config.logging.progress_update_seconds)
 
@@ -960,6 +1012,7 @@ def _process_video(
                         diff_threshold=diff_threshold,
                         blur_kernel_size=blur_kernel_size,
                         compute_spatial_grid=compute_spatial_grid,
+                        gpu_acceleration=gpu_acceleration,
                         spatial_grid_size=spatial_grid_size,
                     )
                     update_running_stats(
@@ -1089,6 +1142,9 @@ def run_pipeline(config: AppConfig) -> None:
         return
 
     LOGGER.info("Discovered %d video(s).", len(videos))
+
+    gpu_acceleration = _resolve_gpu_acceleration(config)
+    config.processing["gpu_acceleration"] = gpu_acceleration
 
     ordered_reports: dict[int, dict[str, Any]] = {}
     pending_jobs: list[VideoJob] = []

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 import cv2
 import numpy as np
+
+
+LOGGER = logging.getLogger(__name__)
+_GPU_FALLBACK_LOGGED = False
 
 
 @dataclass
@@ -93,24 +99,73 @@ def compute_spatial_grid_array(
     return grid
 
 
-def compute_motility(
-    previous_frame: object,
-    current_frame: object,
+def _cuda_is_available() -> bool:
+    cuda_module = getattr(cv2, "cuda", None)
+    if cuda_module is None:
+        return False
+
+    get_device_count = getattr(cuda_module, "getCudaEnabledDeviceCount", None)
+    if not callable(get_device_count):
+        return False
+
+    try:
+        return int(get_device_count()) > 0
+    except Exception:
+        return False
+
+
+def probe_gpu_acceleration(blur_kernel_size: int) -> tuple[bool, str]:
+    if not _cuda_is_available():
+        return False, "No CUDA-capable OpenCV device is available."
+
+    try:
+        sample_frame = np.zeros((1, 1, 3), dtype=np.uint8)
+        gpu_frame = _cuda_gputmat()
+        gpu_frame.upload(sample_frame)
+
+        gray_frame = cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2GRAY)
+        if blur_kernel_size > 1:
+            gaussian_filter = _get_cuda_gaussian_filter(blur_kernel_size)
+            gray_frame = gaussian_filter.apply(gray_frame)
+
+        _ = gray_frame.download()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _cuda_gputmat() -> Any:
+    gputmat_type = getattr(cv2, "cuda_GpuMat", None)
+    if gputmat_type is None:
+        raise RuntimeError("OpenCV CUDA GpuMat support is unavailable.")
+    return gputmat_type()
+
+
+@lru_cache(maxsize=8)
+def _get_cuda_gaussian_filter(blur_kernel_size: int) -> Any:
+    cuda_module = getattr(cv2, "cuda", None)
+    if cuda_module is None:
+        raise RuntimeError("OpenCV CUDA module is unavailable.")
+
+    create_gaussian_filter = getattr(cuda_module, "createGaussianFilter", None)
+    if not callable(create_gaussian_filter):
+        raise RuntimeError("OpenCV CUDA Gaussian filter support is unavailable.")
+
+    return create_gaussian_filter(
+        cv2.CV_8UC1,
+        cv2.CV_8UC1,
+        (blur_kernel_size, blur_kernel_size),
+        0,
+    )
+
+
+def _finalize_motility_from_diff(
+    diff: np.ndarray,
     *,
     diff_threshold: int,
-    blur_kernel_size: int,
-    compute_spatial_grid: bool = False,
-    spatial_grid_size: int = 16,
+    compute_spatial_grid: bool,
+    spatial_grid_size: int,
 ) -> dict[str, Any]:
-    prev_gray = cv2.cvtColor(previous_frame, cv2.COLOR_BGR2GRAY)
-    curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-
-    if blur_kernel_size > 1:
-        kernel = (blur_kernel_size, blur_kernel_size)
-        prev_gray = cv2.GaussianBlur(prev_gray, kernel, 0)
-        curr_gray = cv2.GaussianBlur(curr_gray, kernel, 0)
-
-    diff = cv2.absdiff(curr_gray, prev_gray)
     _, thresholded = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY)
 
     total_pixels = thresholded.size
@@ -123,11 +178,115 @@ def compute_motility(
         "active_pixel_ratio": round(active_pixel_ratio, 6),
         "mean_diff_intensity": round(mean_diff_intensity, 6),
     }
-    
+
     if compute_spatial_grid:
         result["spatial_grid"] = compute_spatial_grid_array(thresholded, spatial_grid_size)
-    
+
     return result
+
+
+def _compute_motility_cpu(
+    previous_frame: object,
+    current_frame: object,
+    *,
+    diff_threshold: int,
+    blur_kernel_size: int,
+    compute_spatial_grid: bool,
+    spatial_grid_size: int,
+) -> dict[str, Any]:
+    prev_gray = cv2.cvtColor(previous_frame, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+
+    if blur_kernel_size > 1:
+        kernel = (blur_kernel_size, blur_kernel_size)
+        prev_gray = cv2.GaussianBlur(prev_gray, kernel, 0)
+        curr_gray = cv2.GaussianBlur(curr_gray, kernel, 0)
+
+    diff = cv2.absdiff(curr_gray, prev_gray)
+    return _finalize_motility_from_diff(
+        diff,
+        diff_threshold=diff_threshold,
+        compute_spatial_grid=compute_spatial_grid,
+        spatial_grid_size=spatial_grid_size,
+    )
+
+
+def _compute_motility_cuda(
+    previous_frame: object,
+    current_frame: object,
+    *,
+    diff_threshold: int,
+    blur_kernel_size: int,
+    compute_spatial_grid: bool,
+    spatial_grid_size: int,
+) -> dict[str, Any]:
+    if not _cuda_is_available():
+        raise RuntimeError("No CUDA-capable OpenCV device is available.")
+
+    cuda_module = cv2.cuda
+    previous_gpu = _cuda_gputmat()
+    current_gpu = _cuda_gputmat()
+    previous_gpu.upload(previous_frame)
+    current_gpu.upload(current_frame)
+
+    previous_gray = cuda_module.cvtColor(previous_gpu, cv2.COLOR_BGR2GRAY)
+    current_gray = cuda_module.cvtColor(current_gpu, cv2.COLOR_BGR2GRAY)
+
+    if blur_kernel_size > 1:
+        gaussian_filter = _get_cuda_gaussian_filter(blur_kernel_size)
+        previous_gray = gaussian_filter.apply(previous_gray)
+        current_gray = gaussian_filter.apply(current_gray)
+
+    diff_gpu = cuda_module.absdiff(current_gray, previous_gray)
+    diff = diff_gpu.download()
+    return _finalize_motility_from_diff(
+        diff,
+        diff_threshold=diff_threshold,
+        compute_spatial_grid=compute_spatial_grid,
+        spatial_grid_size=spatial_grid_size,
+    )
+
+
+def _log_gpu_fallback(reason: str) -> None:
+    global _GPU_FALLBACK_LOGGED
+    if _GPU_FALLBACK_LOGGED:
+        return
+
+    LOGGER.warning("GPU acceleration disabled for motility analysis: %s. Falling back to CPU.", reason)
+    _GPU_FALLBACK_LOGGED = True
+
+
+def compute_motility(
+    previous_frame: object,
+    current_frame: object,
+    *,
+    diff_threshold: int,
+    blur_kernel_size: int,
+    compute_spatial_grid: bool = False,
+    spatial_grid_size: int = 16,
+    gpu_acceleration: bool = False,
+) -> dict[str, Any]:
+    if gpu_acceleration:
+        try:
+            return _compute_motility_cuda(
+                previous_frame,
+                current_frame,
+                diff_threshold=diff_threshold,
+                blur_kernel_size=blur_kernel_size,
+                compute_spatial_grid=compute_spatial_grid,
+                spatial_grid_size=spatial_grid_size,
+            )
+        except Exception as exc:
+            _log_gpu_fallback(str(exc))
+
+    return _compute_motility_cpu(
+        previous_frame,
+        current_frame,
+        diff_threshold=diff_threshold,
+        blur_kernel_size=blur_kernel_size,
+        compute_spatial_grid=compute_spatial_grid,
+        spatial_grid_size=spatial_grid_size,
+    )
 
 
 def process_frame(

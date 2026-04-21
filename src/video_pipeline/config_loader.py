@@ -225,6 +225,10 @@ def _build_processing_config(section: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(compute_spatial_grid, bool):
         raise ValueError("processing.compute_spatial_grid must be a boolean.")
 
+    gpu_acceleration = config.get("gpu_acceleration", True)
+    if not isinstance(gpu_acceleration, bool):
+        raise ValueError("processing.gpu_acceleration must be a boolean.")
+
     spatial_grid_size = config.get("spatial_grid_size", 16)
     if not isinstance(spatial_grid_size, int) or spatial_grid_size <= 0:
         raise ValueError("processing.spatial_grid_size must be a positive integer.")
@@ -233,6 +237,7 @@ def _build_processing_config(section: dict[str, Any]) -> dict[str, Any]:
     config["blur_kernel_size"] = blur_kernel_size
     config["active_motion_threshold"] = float(active_motion_threshold)
     config["compute_spatial_grid"] = compute_spatial_grid
+    config["gpu_acceleration"] = gpu_acceleration
     config["spatial_grid_size"] = spatial_grid_size
     return config
 

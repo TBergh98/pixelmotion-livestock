@@ -14,6 +14,8 @@ Pipeline Python + OpenCV per elaborare video lunghi in streaming, calcolare moti
 Requirements:
 - Python 3.10+
 - OpenCV runtime dependencies for your OS
+- Per usare `processing.gpu_acceleration=true`, serve una build di OpenCV con supporto CUDA.
+- All'avvio la pipeline prova la GPU di default; se il probe fallisce, chiede se continuare con CPU o fermarsi per sistemare il sistema.
 
 Create and activate Conda environment:
 
@@ -100,6 +102,7 @@ Main settings are in [config.yaml](config.yaml):
 - processing.diff_threshold
 - processing.blur_kernel_size
 - processing.active_motion_threshold
+- processing.gpu_acceleration (default: true)
 
 Spatial heatmap settings (processing):
 - processing.compute_spatial_grid (default: false) — Enable spatial motion tracking
@@ -242,5 +245,6 @@ When `processing.compute_spatial_grid=true`, the pipeline additionally computes 
 - The first sampled frame of each segment has no previous frame to compare against, so it has no motility fields.
 - For this reason, sampled_frames can be greater than motility.count.
 - Se analytics.enabled=true ma matplotlib/plotly non sono disponibili, la pipeline continua e logga warning/error sui plot mancanti.
+- Se il probe GPU fallisce all'avvio, la pipeline chiede se continuare con CPU o interrompere il run per intervenire sul sistema.
 - Se spatial_grid=false, i record JSONL non includeranno dati spaziali e le heatmap non verranno generate.
 - In multiprocess mode, progress snapshots are throttled by logging.multi_video_progress_seconds to avoid terminal spam.
