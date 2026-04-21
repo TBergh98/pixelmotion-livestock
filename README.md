@@ -36,6 +36,53 @@ Run:
 python -m src.video_pipeline.cli --config ./config.yaml
 ```
 
+Aggregate existing intraday plots into timeline composites (PNG + PDF):
+
+```bash
+python -m src.video_pipeline.cli aggregate-plots --analytics-root data/output/analytics
+```
+
+Examples:
+
+```bash
+# Only GroupA and GroupB
+python -m src.video_pipeline.cli aggregate-plots --groups GroupA,GroupB
+
+# Force horizontal heatmap layout
+python -m src.video_pipeline.cli aggregate-plots --heatmap-layout horizontal
+
+# Lower threshold to trigger 2-column fallback sooner
+python -m src.video_pipeline.cli aggregate-plots --max-height-px 12000
+```
+
+The command groups same-type intraday plots across days and creates one composite per group/type:
+- `intraday_distribution`
+- `intraday_timeseries`
+- `spatial_heatmap`
+
+Layout rules:
+- Default is single-column vertical for readability.
+- If the image gets too tall, it automatically switches to 2 columns.
+- Heatmaps can be `auto`, `vertical`, or `horizontal` via `--heatmap-layout`.
+
+## GPU Build on Windows
+
+The default [environment.yml](environment.yml) is a CPU-oriented setup. To build OpenCV with CUDA support, use [environment-gpu.yml](environment-gpu.yml) and then run [scripts/build_opencv_cuda.ps1](scripts/build_opencv_cuda.ps1).
+
+Prerequisites:
+- NVIDIA CUDA Toolkit installed and `nvcc` available on `PATH`
+- `cmake`, `ninja`, and `git` available on `PATH` or installed in the GPU Conda environment
+
+Steps:
+
+```powershell
+conda env create -f environment-gpu.yml
+conda activate pixelmotion-livestock-gpu
+.\scripts\build_opencv_cuda.ps1
+```
+
+The build script compiles OpenCV 4.10.0 with CUDA enabled, installs it into the active Conda environment, and then verifies that `cv2.cuda` is available. The default `CudaArchBin` value is `8.9`, which matches the RTX 5000 Ada Laptop GPU reported in this workspace.
+
 ## Input Hierarchy (Optional but recommended)
 
 Per analisi multi-gruppo/multi-giorno, usa una struttura cartelle gerarchica:
@@ -246,5 +293,6 @@ When `processing.compute_spatial_grid=true`, the pipeline additionally computes 
 - For this reason, sampled_frames can be greater than motility.count.
 - Se analytics.enabled=true ma matplotlib/plotly non sono disponibili, la pipeline continua e logga warning/error sui plot mancanti.
 - Se il probe GPU fallisce all'avvio, la pipeline chiede se continuare con CPU o interrompere il run per intervenire sul sistema.
+- Se la GPU non viene vista, controlla che OpenCV sia stato compilato con CUDA usando [environment-gpu.yml](environment-gpu.yml) e [scripts/build_opencv_cuda.ps1](scripts/build_opencv_cuda.ps1).
 - Se spatial_grid=false, i record JSONL non includeranno dati spaziali e le heatmap non verranno generate.
 - In multiprocess mode, progress snapshots are throttled by logging.multi_video_progress_seconds to avoid terminal spam.
