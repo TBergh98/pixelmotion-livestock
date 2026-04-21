@@ -67,6 +67,11 @@ class AnalyticsConfig:
     plots: dict[str, bool]  # e.g., {"intraday_timeseries": True, ...}
     output_subdir: str
     primary_metric: str
+    include_outlier_ratio: bool
+    summary_enabled: bool
+    summary_formats: dict[str, bool]  # e.g., {"markdown": True, "csv": True}
+    plot_annotations_enabled: bool
+    annotation_density: str  # off|minimal|compact|detailed
 
 
 @dataclass(frozen=True)
@@ -350,6 +355,10 @@ def _build_analytics_config(section: dict[str, Any]) -> AnalyticsConfig:
     if not isinstance(include_trend, bool):
         raise ValueError("analytics.descriptive_metrics.include_trend_slope must be a boolean.")
 
+    include_outlier_ratio = descriptive_metrics.get("include_outlier_ratio", True)
+    if not isinstance(include_outlier_ratio, bool):
+        raise ValueError("analytics.descriptive_metrics.include_outlier_ratio must be a boolean.")
+
     output_formats_raw = section.get("output_formats", {"png": True, "html": True})
     if not isinstance(output_formats_raw, dict):
         raise ValueError("analytics.output_formats must be a dict.")
@@ -374,6 +383,31 @@ def _build_analytics_config(section: dict[str, Any]) -> AnalyticsConfig:
     if primary_metric not in ("mean", "median"):
         raise ValueError("analytics.primary_metric must be 'mean' or 'median'.")
 
+    summary_raw = section.get("summary", {"enabled": True, "formats": {"markdown": True, "csv": True}})
+    if not isinstance(summary_raw, dict):
+        raise ValueError("analytics.summary must be a dict.")
+
+    summary_enabled = summary_raw.get("enabled", True)
+    if not isinstance(summary_enabled, bool):
+        raise ValueError("analytics.summary.enabled must be a boolean.")
+
+    summary_formats_raw = summary_raw.get("formats", {"markdown": True, "csv": True})
+    if not isinstance(summary_formats_raw, dict):
+        raise ValueError("analytics.summary.formats must be a dict.")
+    summary_formats = {str(k): bool(v) for k, v in summary_formats_raw.items()}
+
+    annotations_raw = section.get("plot_annotations", {"enabled": True, "density": "compact"})
+    if not isinstance(annotations_raw, dict):
+        raise ValueError("analytics.plot_annotations must be a dict.")
+
+    plot_annotations_enabled = annotations_raw.get("enabled", True)
+    if not isinstance(plot_annotations_enabled, bool):
+        raise ValueError("analytics.plot_annotations.enabled must be a boolean.")
+
+    annotation_density = str(annotations_raw.get("density", "compact")).strip().lower()
+    if annotation_density not in {"off", "minimal", "compact", "detailed"}:
+        raise ValueError("analytics.plot_annotations.density must be one of: off, minimal, compact, detailed.")
+
     return AnalyticsConfig(
         enabled=enabled,
         intraday_window_seconds=intraday_window,
@@ -383,10 +417,15 @@ def _build_analytics_config(section: dict[str, Any]) -> AnalyticsConfig:
         percentiles=percentiles,
         include_coeff_variation=include_coeff_var,
         include_trend_slope=include_trend,
+        include_outlier_ratio=include_outlier_ratio,
         output_formats=output_formats,
         plots=plots,
         output_subdir=output_subdir.strip(),
         primary_metric=primary_metric.strip(),
+        summary_enabled=summary_enabled,
+        summary_formats=summary_formats,
+        plot_annotations_enabled=plot_annotations_enabled,
+        annotation_density=annotation_density,
     )
 
 

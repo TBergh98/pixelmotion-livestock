@@ -97,6 +97,8 @@ analytics:
     include_coeff_variation: true
     # Compute inter-segment trend (linear regression slope)
     include_trend_slope: true
+    # Fraction of samples with |z-score| > 3 in each aggregation window
+    include_outlier_ratio: true
   
   # Output formats for plots
   output_formats:
@@ -118,6 +120,19 @@ analytics:
   
   # Directory for analytics outputs (relative to output.directory)
   output_subdir: "analytics"
+
+  # Quick summary files per group for immediate reading
+  summary:
+    enabled: true
+    formats:
+      markdown: true
+      csv: true
+
+  # Overlay concise KPI boxes directly on generated plots
+  plot_annotations:
+    enabled: true
+    # One of: off, minimal, compact, detailed
+    density: "compact"
   
   # Metric to use as primary for inter-day trend (e.g., "median", "mean")
   primary_metric: "median"

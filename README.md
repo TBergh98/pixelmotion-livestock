@@ -7,6 +7,7 @@ Pipeline Python + OpenCV per elaborare video lunghi in streaming, calcolare moti
 - Un JSONL per video con record frame-level e summary per segmento.
 - Un report finale: data/output/motility_report.json.
 - Se analytics e attivo: metriche e plot (PNG/HTML) separati per gruppo e giorno.
+- Per ogni gruppo analytics: riepilogo rapido in `quick_summary.md` e `quick_summary.csv`.
 - Checkpoint incrementali per resume affidabile su run lunghi.
 
 ## Quick Start
@@ -145,6 +146,8 @@ data/output/
 				video_01_results.jsonl
 	analytics/
 		GroupA/
+			quick_summary.md
+			quick_summary.csv
 			2026-04-15/
 				intraday_metrics.json
 				plots/
@@ -193,6 +196,18 @@ Analytics/hierarchy settings:
 - analytics.plots.intraday_heatmap — Spatial heatmap showing motion concentration
 - analytics.plots.interday_trend
 - analytics.plots.interday_delta
+- analytics.descriptive_metrics.include_outlier_ratio
+- analytics.summary.enabled
+- analytics.summary.formats.markdown
+- analytics.summary.formats.csv
+- analytics.plot_annotations.enabled
+- analytics.plot_annotations.density
+
+Plot annotations:
+- `off`: nessuna annotazione KPI
+- `minimal`: 1-2 KPI principali
+- `compact`: 3-4 KPI principali (default)
+- `detailed`: fino a 8 KPI
 
 Checkpoint settings:
 - checkpoint.enabled

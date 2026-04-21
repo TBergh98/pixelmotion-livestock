@@ -37,9 +37,18 @@ class DescriptiveStats:
     coeff_variation: float | None = None  # std / mean if mean > 0
     percentiles: dict[int, float] | None = None  # e.g., {10: 0.05, 25: 0.1, ...}
     trend_slope: float | None = None  # linear regression slope over time
+    iqr: float | None = None  # interquartile range (p75 - p25)
+    p90_p10_spread: float | None = None  # high-low spread (p90 - p10)
+    outlier_ratio: float | None = None  # fraction with |z| > 3
 
 
-def compute_descriptive_stats(motility_values: list[float], percentiles_list: list[int] | None = None, include_slope: bool = False) -> DescriptiveStats:
+def compute_descriptive_stats(
+    motility_values: list[float],
+    percentiles_list: list[int] | None = None,
+    include_slope: bool = False,
+    include_coeff_variation: bool = True,
+    include_outlier_ratio: bool = True,
+) -> DescriptiveStats:
     """
     Compute descriptive statistics for a list of motility scores.
     
@@ -54,7 +63,14 @@ def compute_descriptive_stats(motility_values: list[float], percentiles_list: li
     if not motility_values:
         return DescriptiveStats(
             count=0, mean=0.0, median=0.0, std=0.0, min=0.0, max=0.0,
-            amplitude=0.0, active_ratio=0.0, coeff_variation=None, percentiles=None, trend_slope=None
+            amplitude=0.0,
+            active_ratio=0.0,
+            coeff_variation=None,
+            percentiles=None,
+            trend_slope=None,
+            iqr=None,
+            p90_p10_spread=None,
+            outlier_ratio=None,
         )
     
     count = len(motility_values)
@@ -71,7 +87,7 @@ def compute_descriptive_stats(motility_values: list[float], percentiles_list: li
     active_ratio = float(np.sum(values_array >= 0.02) / count) if count > 0 else 0.0
     
     coeff_var = None
-    if mean_val > 0:
+    if include_coeff_variation and mean_val > 0:
         coeff_var = float(std_val / mean_val)
     
     # Compute percentiles
@@ -93,6 +109,27 @@ def compute_descriptive_stats(motility_values: list[float], percentiles_list: li
             trend_slope = float(coeffs[0])
         except Exception as e:
             LOGGER.warning(f"Failed to compute trend slope: {e}")
+
+    iqr = None
+    p90_p10_spread = None
+    if percentiles_dict is not None:
+        p25 = percentiles_dict.get(25)
+        p75 = percentiles_dict.get(75)
+        if p25 is not None and p75 is not None:
+            iqr = float(p75 - p25)
+
+        p10 = percentiles_dict.get(10)
+        p90 = percentiles_dict.get(90)
+        if p10 is not None and p90 is not None:
+            p90_p10_spread = float(p90 - p10)
+
+    outlier_ratio = None
+    if include_outlier_ratio:
+        if count > 1 and std_val > 0:
+            z_scores = np.abs((values_array - mean_val) / std_val)
+            outlier_ratio = float(np.sum(z_scores > 3.0) / count)
+        else:
+            outlier_ratio = 0.0
     
     return DescriptiveStats(
         count=count,
@@ -106,6 +143,9 @@ def compute_descriptive_stats(motility_values: list[float], percentiles_list: li
         coeff_variation=round(coeff_var, 6) if coeff_var is not None else None,
         percentiles=percentiles_dict,
         trend_slope=round(trend_slope, 6) if trend_slope is not None else None,
+        iqr=round(iqr, 6) if iqr is not None else None,
+        p90_p10_spread=round(p90_p10_spread, 6) if p90_p10_spread is not None else None,
+        outlier_ratio=round(outlier_ratio, 6) if outlier_ratio is not None else None,
     )
 
 
@@ -173,6 +213,8 @@ def compute_intraday_metrics(
     window_seconds: int,
     percentiles_list: list[int] | None = None,
     include_slope: bool = False,
+    include_coeff_variation: bool = True,
+    include_outlier_ratio: bool = True,
     recording_date: str | None = None,
     group_id: str | None = None,
 ) -> IntraDayMetrics:
@@ -195,14 +237,18 @@ def compute_intraday_metrics(
         window_stats[window_idx] = compute_descriptive_stats(
             motility_values,
             percentiles_list=percentiles_list,
-            include_slope=include_slope
+            include_slope=include_slope,
+            include_coeff_variation=include_coeff_variation,
+            include_outlier_ratio=include_outlier_ratio,
         )
     
     # Compute daily aggregate
     daily_stats = compute_descriptive_stats(
         all_motility,
         percentiles_list=percentiles_list,
-        include_slope=False  # Don't compute slope for daily aggregate
+        include_slope=False,  # Don't compute slope for daily aggregate
+        include_coeff_variation=include_coeff_variation,
+        include_outlier_ratio=include_outlier_ratio,
     )
     
     return IntraDayMetrics(
@@ -270,6 +316,10 @@ def compute_interday_metrics(
             "max": daily_stats.max,
             "amplitude": daily_stats.amplitude,
             "active_ratio": daily_stats.active_ratio,
+            "coeff_variation": daily_stats.coeff_variation,
+            "iqr": daily_stats.iqr,
+            "p90_p10_spread": daily_stats.p90_p10_spread,
+            "outlier_ratio": daily_stats.outlier_ratio,
             "primary_value": primary_val,  # The main metric for trending
         }
         daily_summaries.append(summary)

@@ -17,6 +17,53 @@ import numpy as np
 LOGGER = logging.getLogger(__name__)
 
 
+def _select_annotation_lines(lines: list[str], density: str) -> list[str]:
+    density_key = (density or "compact").lower()
+    if density_key == "off":
+        return []
+    if density_key == "minimal":
+        return lines[:2]
+    if density_key == "detailed":
+        return lines[:8]
+    return lines[:4]
+
+
+def _add_matplotlib_annotation(ax: Any, lines: list[str], *, x: float = 0.99, y: float = 0.99) -> None:
+    if not lines:
+        return
+
+    ax.text(
+        x,
+        y,
+        "\n".join(lines),
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
+        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.7, "edgecolor": "gray"},
+    )
+
+
+def _add_plotly_annotation(figure: Any, lines: list[str], *, x: float = 0.99, y: float = 0.99) -> None:
+    if not lines:
+        return
+
+    figure.add_annotation(
+        xref="paper",
+        yref="paper",
+        x=x,
+        y=y,
+        xanchor="right",
+        yanchor="top",
+        align="left",
+        showarrow=False,
+        text="<br>".join(lines),
+        bgcolor="rgba(255,255,255,0.75)",
+        bordercolor="gray",
+        borderwidth=1,
+    )
+
+
 def _import_matplotlib():
     """Lazy import matplotlib to avoid hard dependency."""
     try:
@@ -51,6 +98,8 @@ def plot_intraday_timeseries(
     y_limits: tuple[float, float] | None = None,
     generate_png: bool = True,
     generate_html: bool = False,
+    annotations_enabled: bool = True,
+    annotation_density: str = "compact",
 ) -> tuple[Path | None, Path | None]:
     """
     Generate intra-day time series plot showing motility score over time.
@@ -74,8 +123,25 @@ def plot_intraday_timeseries(
     times_hours = [idx * window_duration_seconds / 3600 for idx in window_indices]
     means = [descriptive_stats[idx].get("mean", 0) for idx in window_indices if idx in descriptive_stats]
     medians = [descriptive_stats[idx].get("median", 0) for idx in window_indices if idx in descriptive_stats]
+    active_ratios = [descriptive_stats[idx].get("active_ratio") for idx in window_indices if idx in descriptive_stats]
+    amplitudes = [descriptive_stats[idx].get("amplitude") for idx in window_indices if idx in descriptive_stats]
+    slopes = [descriptive_stats[idx].get("trend_slope") for idx in window_indices if idx in descriptive_stats]
     date_str = recording_date or "nodate"
     group_str = group_id or "unknown"
+
+    trend_values = [float(v) for v in slopes if isinstance(v, (int, float))]
+    active_values = [float(v) for v in active_ratios if isinstance(v, (int, float))]
+    amplitude_values = [float(v) for v in amplitudes if isinstance(v, (int, float))]
+    latest_median = medians[-1] if medians else 0.0
+    annotation_lines = _select_annotation_lines(
+        [
+            f"Latest median: {latest_median:.4f}",
+            f"Avg active ratio: {float(np.mean(active_values)):.3f}" if active_values else "Avg active ratio: -",
+            f"Max amplitude: {float(np.max(amplitude_values)):.4f}" if amplitude_values else "Max amplitude: -",
+            f"Avg trend slope: {float(np.mean(trend_values)):.6f}" if trend_values else "Avg trend slope: -",
+        ],
+        annotation_density,
+    )
 
     try:
         if generate_png:
@@ -93,6 +159,8 @@ def plot_intraday_timeseries(
                     ax.set_ylim(y_limits[0], y_limits[1])
                 ax.legend()
                 ax.grid(True, alpha=0.3)
+                if annotations_enabled:
+                    _add_matplotlib_annotation(ax, annotation_lines)
                 png_path = output_dir / f"intraday_timeseries_{date_str}_{group_str}.png"
                 fig.savefig(png_path, dpi=100, bbox_inches='tight')
                 plt.close(fig)
@@ -113,6 +181,8 @@ def plot_intraday_timeseries(
                     figure.update_xaxes(range=[0, x_max_hours])
                 if y_limits is not None:
                     figure.update_yaxes(range=[y_limits[0], y_limits[1]])
+                if annotations_enabled:
+                    _add_plotly_annotation(figure, annotation_lines)
                 html_path = output_dir / f"intraday_timeseries_{date_str}_{group_str}.html"
                 figure.write_html(str(html_path), include_plotlyjs='cdn')
                 LOGGER.info("Saved HTML plot to %s", html_path)
@@ -133,6 +203,8 @@ def plot_intraday_distribution(
     y_limits: tuple[float, float] | None = None,
     generate_png: bool = True,
     generate_html: bool = False,
+    annotations_enabled: bool = True,
+    annotation_density: str = "compact",
 ) -> tuple[Path | None, Path | None]:
     """
     Generate intra-day distribution plot (box/violin plot by time window).
@@ -145,6 +217,26 @@ def plot_intraday_distribution(
     labels = [f"{(idx * window_duration_seconds) / 3600:.2f}h" for idx in window_indices]
     date_str = recording_date or "nodate"
     group_str = group_id or "unknown"
+
+    flattened = [float(v) for values in data_list for v in values]
+    if flattened:
+        flattened_array = np.array(flattened, dtype=float)
+        med = float(np.median(flattened_array))
+        q1 = float(np.percentile(flattened_array, 25))
+        q3 = float(np.percentile(flattened_array, 75))
+        p10 = float(np.percentile(flattened_array, 10))
+        p90 = float(np.percentile(flattened_array, 90))
+        annotation_lines = _select_annotation_lines(
+            [
+                f"Median: {med:.4f}",
+                f"IQR: {(q3 - q1):.4f}",
+                f"P90-P10: {(p90 - p10):.4f}",
+                f"Samples: {len(flattened)}",
+            ],
+            annotation_density,
+        )
+    else:
+        annotation_lines = []
 
     try:
         if generate_png:
@@ -177,6 +269,8 @@ def plot_intraday_distribution(
                 ax.set_ylabel('Motility Score', fontsize=11)
                 ax.set_title(f'Intra-day Distribution by Window - {group_str} ({date_str})', fontsize=13)
                 ax.grid(True, alpha=0.3, axis='y')
+                if annotations_enabled:
+                    _add_matplotlib_annotation(ax, annotation_lines)
                 png_path = output_dir / f"intraday_distribution_{date_str}_{group_str}.png"
                 fig.savefig(png_path, dpi=100, bbox_inches='tight')
                 plt.close(fig)
@@ -202,6 +296,8 @@ def plot_intraday_distribution(
                     figure.update_xaxes(categoryorder='array', categoryarray=category_labels)
                 if y_limits is not None:
                     figure.update_yaxes(range=[y_limits[0], y_limits[1]])
+                if annotations_enabled:
+                    _add_plotly_annotation(figure, annotation_lines)
                 html_path = output_dir / f"intraday_distribution_{date_str}_{group_str}.html"
                 figure.write_html(str(html_path), include_plotlyjs='cdn')
                 LOGGER.info("Saved HTML distribution plot to %s", html_path)
@@ -218,6 +314,9 @@ def plot_interday_trend(
     output_dir: Path,
     generate_png: bool = True,
     generate_html: bool = False,
+    trend_data: dict[str, Any] | None = None,
+    annotations_enabled: bool = True,
+    annotation_density: str = "compact",
 ) -> tuple[Path | None, Path | None]:
     """
     Generate inter-day trend plot showing daily metric evolution.
@@ -231,6 +330,16 @@ def plot_interday_trend(
         primary_vals = [s.get("primary_value", 0) for s in daily_summaries]
         means = [s.get("mean", 0) for s in daily_summaries]
         stds = [s.get("std", 0) for s in daily_summaries]
+        trend_payload = trend_data or {}
+        annotation_lines = _select_annotation_lines(
+            [
+                f"Days: {len(daily_summaries)}",
+                f"Primary mean: {float(np.mean(primary_vals)):.4f}" if primary_vals else "Primary mean: -",
+                f"Primary std: {float(np.std(primary_vals)):.4f}" if primary_vals else "Primary std: -",
+                f"Avg daily change: {trend_payload.get('avg_daily_change', '-')}",
+            ],
+            annotation_density,
+        )
 
         if generate_png:
             plt = _import_matplotlib()
@@ -245,6 +354,8 @@ def plot_interday_trend(
                 ax.set_title(f'Inter-day Trend - {group_id}', fontsize=13)
                 ax.legend()
                 ax.grid(True, alpha=0.3)
+                if annotations_enabled:
+                    _add_matplotlib_annotation(ax, annotation_lines)
                 png_path = output_dir / f"interday_trend_{group_id}.png"
                 fig.savefig(png_path, dpi=100, bbox_inches='tight')
                 plt.close(fig)
@@ -257,6 +368,8 @@ def plot_interday_trend(
                 figure.add_trace(go.Scatter(x=dates, y=primary_vals, mode='lines+markers', name='Primary Metric'))
                 figure.add_trace(go.Scatter(x=dates, y=means, mode='lines+markers', name='Mean'))
                 figure.update_layout(title=f'Inter-day Trend - {group_id}', xaxis_title='Date', yaxis_title='Motility Score')
+                if annotations_enabled:
+                    _add_plotly_annotation(figure, annotation_lines)
                 html_path = output_dir / f"interday_trend_{group_id}.html"
                 figure.write_html(str(html_path), include_plotlyjs='cdn')
                 LOGGER.info("Saved HTML inter-day trend plot to %s", html_path)
@@ -273,6 +386,9 @@ def plot_interday_delta(
     output_dir: Path,
     generate_png: bool = True,
     generate_html: bool = False,
+    trend_data: dict[str, Any] | None = None,
+    annotations_enabled: bool = True,
+    annotation_density: str = "compact",
 ) -> tuple[Path | None, Path | None]:
     """
     Generate inter-day delta plot showing day-over-day changes.
@@ -292,6 +408,19 @@ def plot_interday_delta(
         # Compute day-over-day deltas
         deltas = [primary_vals[i+1] - primary_vals[i] for i in range(len(primary_vals)-1)]
         delta_dates = dates[1:]
+        positive_days = sum(1 for d in deltas if d >= 0)
+        negative_days = len(deltas) - positive_days
+        trend_payload = trend_data or {}
+        annotation_lines = _select_annotation_lines(
+            [
+                f"Latest delta: {deltas[-1]:+.4f}" if deltas else "Latest delta: -",
+                f"Avg delta: {float(np.mean(deltas)):+.4f}" if deltas else "Avg delta: -",
+                f"Positive days: {positive_days}",
+                f"Negative days: {negative_days}",
+                f"Trend avg change: {trend_payload.get('avg_daily_change', '-')}",
+            ],
+            annotation_density,
+        )
         
         if generate_png:
             plt = _import_matplotlib()
@@ -306,6 +435,8 @@ def plot_interday_delta(
                 ax.set_title(f'Inter-day Delta (Change) - {group_id}', fontsize=13)
                 ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
                 ax.grid(True, alpha=0.3, axis='y')
+                if annotations_enabled:
+                    _add_matplotlib_annotation(ax, annotation_lines)
                 png_path = output_dir / f"interday_delta_{group_id}.png"
                 fig.savefig(png_path, dpi=100, bbox_inches='tight')
                 plt.close(fig)
@@ -321,6 +452,8 @@ def plot_interday_delta(
                     xaxis_title='Date',
                     yaxis_title='Day-over-Day Change',
                 )
+                if annotations_enabled:
+                    _add_plotly_annotation(figure, annotation_lines)
                 html_path = output_dir / f"interday_delta_{group_id}.html"
                 figure.write_html(str(html_path), include_plotlyjs='cdn')
                 LOGGER.info("Saved HTML inter-day delta plot to %s", html_path)
@@ -339,6 +472,8 @@ def plot_spatial_heatmap(
     output_dir: Path,
     grid_size: int = 16,
     generate_png: bool = True,
+    annotations_enabled: bool = True,
+    annotation_density: str = "compact",
 ) -> Path | None:
     """
     Generate spatial heatmap showing where motion is concentrated across the frame.
@@ -387,6 +522,18 @@ def plot_spatial_heatmap(
         
         # Reshape to 2D grid
         heatmap_2d = aggregated_grid.reshape((grid_size, grid_size))
+        hotspot_index = int(np.argmax(aggregated_grid))
+        hotspot_row = hotspot_index // grid_size
+        hotspot_col = hotspot_index % grid_size
+        annotation_lines = _select_annotation_lines(
+            [
+                f"Windows: {window_count}",
+                f"Mean density: {float(np.mean(aggregated_grid)):.4f}",
+                f"Max density: {float(np.max(aggregated_grid)):.4f}",
+                f"Hotspot cell: ({hotspot_row}, {hotspot_col})",
+            ],
+            annotation_density,
+        )
         
         # Create heatmap plot
         fig, ax = plt.subplots(figsize=(8, 8))
@@ -403,6 +550,8 @@ def plot_spatial_heatmap(
         ax.set_xticks(np.arange(-0.5, grid_size, 1), minor=True)
         ax.set_yticks(np.arange(-0.5, grid_size, 1), minor=True)
         ax.grid(which='minor', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
+        if annotations_enabled:
+            _add_matplotlib_annotation(ax, annotation_lines)
         
         png_path = output_dir / f"spatial_heatmap_{date_str}_{group_str}.png"
         fig.savefig(png_path, dpi=100, bbox_inches='tight')

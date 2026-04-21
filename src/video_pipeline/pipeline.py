@@ -43,6 +43,7 @@ from .plotting import (
     plot_intraday_timeseries,
     plot_spatial_heatmap,
 )
+from .quick_summary import generate_quick_summary_files
 from .processor import (
     probe_gpu_acceleration,
     RunningStats,
@@ -586,6 +587,8 @@ def _generate_intraday_artifacts(
         window_seconds=config.analytics.intraday_window_seconds,
         percentiles_list=list(config.analytics.percentiles),
         include_slope=config.analytics.include_trend_slope,
+        include_coeff_variation=config.analytics.include_coeff_variation,
+        include_outlier_ratio=config.analytics.include_outlier_ratio,
         recording_date=recording_date,
         group_id=group_id,
     )
@@ -613,6 +616,8 @@ def _generate_intraday_artifacts(
             output_dir=plots_dir,
             generate_png=config.analytics.output_formats.get("png", True),
             generate_html=config.analytics.output_formats.get("html", False),
+            annotations_enabled=config.analytics.plot_annotations_enabled,
+            annotation_density=config.analytics.annotation_density,
         )
         if png_path is not None:
             report["analytics"]["plots"].append(str(png_path))
@@ -628,6 +633,8 @@ def _generate_intraday_artifacts(
             output_dir=plots_dir,
             generate_png=config.analytics.output_formats.get("png", True),
             generate_html=config.analytics.output_formats.get("html", False),
+            annotations_enabled=config.analytics.plot_annotations_enabled,
+            annotation_density=config.analytics.annotation_density,
         )
         if png_path is not None:
             report["analytics"]["plots"].append(str(png_path))
@@ -650,6 +657,8 @@ def _generate_intraday_artifacts(
                     output_dir=plots_dir,
                     grid_size=int(config.processing.get("spatial_grid_size", 16)),
                     generate_png=config.analytics.output_formats.get("png", True),
+                    annotations_enabled=config.analytics.plot_annotations_enabled,
+                    annotation_density=config.analytics.annotation_density,
                 )
                 if heatmap_path is not None:
                     report["analytics"]["plots"].append(str(heatmap_path))
@@ -681,6 +690,9 @@ def _generate_interday_artifacts(config: AppConfig, group_key: str, daily_metric
             output_dir=plots_dir,
             generate_png=config.analytics.output_formats.get("png", True),
             generate_html=config.analytics.output_formats.get("html", False),
+            trend_data=interday.trend_data,
+            annotations_enabled=config.analytics.plot_annotations_enabled,
+            annotation_density=config.analytics.annotation_density,
         )
         if png_path is not None:
             generated_plots.append(str(png_path))
@@ -694,15 +706,27 @@ def _generate_interday_artifacts(config: AppConfig, group_key: str, daily_metric
             output_dir=plots_dir,
             generate_png=config.analytics.output_formats.get("png", True),
             generate_html=config.analytics.output_formats.get("html", False),
+            trend_data=interday.trend_data,
+            annotations_enabled=config.analytics.plot_annotations_enabled,
+            annotation_density=config.analytics.annotation_density,
         )
         if png_path is not None:
             generated_plots.append(str(png_path))
         if html_path is not None:
             generated_plots.append(str(html_path))
 
+    summary_artifacts: dict[str, str] = {}
+    if config.analytics.summary_enabled:
+        summary_artifacts = generate_quick_summary_files(
+            interday_metrics=interday,
+            output_dir=config.output.directory / config.analytics.output_subdir / group_key,
+            formats=config.analytics.summary_formats,
+        )
+
     return {
         "interday_metrics": str(interday_metrics_path),
         "plots": generated_plots,
+        "quick_summary": summary_artifacts,
     }
 
 

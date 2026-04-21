@@ -26,6 +26,7 @@ from .plotting import (
     plot_intraday_timeseries,
     plot_spatial_heatmap,
 )
+from .quick_summary import generate_quick_summary_files
 
 LOGGER = logging.getLogger(__name__)
 
@@ -133,6 +134,8 @@ def _generate_intraday_from_jsonl(
         window_seconds=config.analytics.intraday_window_seconds,
         percentiles_list=list(config.analytics.percentiles),
         include_slope=config.analytics.include_trend_slope,
+        include_coeff_variation=config.analytics.include_coeff_variation,
+        include_outlier_ratio=config.analytics.include_outlier_ratio,
         recording_date=day_name,
         group_id=group_name,
     )
@@ -157,6 +160,8 @@ def _generate_intraday_from_jsonl(
             y_limits=scale_context.y_limits if scale_context else None,
             generate_png=config.analytics.output_formats.get("png", True),
             generate_html=include_html and config.analytics.output_formats.get("html", False),
+            annotations_enabled=config.analytics.plot_annotations_enabled,
+            annotation_density=config.analytics.annotation_density,
         )
 
     if "intraday_distribution" in selected_plot_types:
@@ -170,6 +175,8 @@ def _generate_intraday_from_jsonl(
             y_limits=scale_context.y_limits if scale_context else None,
             generate_png=config.analytics.output_formats.get("png", True),
             generate_html=include_html and config.analytics.output_formats.get("html", False),
+            annotations_enabled=config.analytics.plot_annotations_enabled,
+            annotation_density=config.analytics.annotation_density,
         )
 
     if "spatial_heatmap" in selected_plot_types:
@@ -187,6 +194,8 @@ def _generate_intraday_from_jsonl(
                 output_dir=plots_dir,
                 grid_size=int(config.processing.get("spatial_grid_size", 16)),
                 generate_png=config.analytics.output_formats.get("png", True),
+                annotations_enabled=config.analytics.plot_annotations_enabled,
+                annotation_density=config.analytics.annotation_density,
             )
         else:
             LOGGER.info("No spatial grid data available for %s", jsonl_path)
@@ -224,6 +233,9 @@ def _generate_interday(
                 output_dir=plots_dir,
                 generate_png=config.analytics.output_formats.get("png", True),
                 generate_html=include_html and config.analytics.output_formats.get("html", False),
+                trend_data=interday.trend_data,
+                annotations_enabled=config.analytics.plot_annotations_enabled,
+                annotation_density=config.analytics.annotation_density,
             )
         if "interday_delta" in selected_plot_types:
             plot_interday_delta(
@@ -232,6 +244,16 @@ def _generate_interday(
                 output_dir=plots_dir,
                 generate_png=config.analytics.output_formats.get("png", True),
                 generate_html=include_html and config.analytics.output_formats.get("html", False),
+                trend_data=interday.trend_data,
+                annotations_enabled=config.analytics.plot_annotations_enabled,
+                annotation_density=config.analytics.annotation_density,
+            )
+
+        if config.analytics.summary_enabled:
+            generate_quick_summary_files(
+                interday_metrics=interday,
+                output_dir=config.output.directory / config.analytics.output_subdir / group_name,
+                formats=config.analytics.summary_formats,
             )
 
 
