@@ -35,6 +35,7 @@ class SamplingConfig:
 class LoggingConfig:
     level: str
     progress_update_seconds: float
+    multi_video_progress_seconds: float
 
 
 @dataclass(frozen=True)
@@ -245,9 +246,14 @@ def _build_logging_config(section: dict[str, Any]) -> LoggingConfig:
     if not isinstance(progress_update_seconds, (int, float)) or float(progress_update_seconds) <= 0:
         raise ValueError("logging.progress_update_seconds must be a positive number.")
 
+    multi_video_progress_seconds = section.get("multi_video_progress_seconds", progress_update_seconds)
+    if not isinstance(multi_video_progress_seconds, (int, float)) or float(multi_video_progress_seconds) <= 0:
+        raise ValueError("logging.multi_video_progress_seconds must be a positive number.")
+
     return LoggingConfig(
         level=level.strip().upper(),
         progress_update_seconds=float(progress_update_seconds),
+        multi_video_progress_seconds=float(multi_video_progress_seconds),
     )
 
 

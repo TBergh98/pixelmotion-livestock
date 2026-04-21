@@ -30,7 +30,8 @@ processing:
 
 logging:
   level: "INFO"
-  progress_update_seconds: 30
+  progress_update_seconds: 10
+  multi_video_progress_seconds: 10
 
 checkpoint:
   enabled: true

@@ -131,6 +131,14 @@ Parallelism settings:
 - parallelism.video_workers (0 = auto)
 - parallelism.analytics_workers (0 = auto)
 
+Logging progress settings:
+- logging.progress_update_seconds
+- logging.multi_video_progress_seconds
+
+When parallelism is enabled with multiple video workers, the terminal now prints:
+- run-level progress (completed/total, active workers, estimated ETA)
+- per-video progress snapshots for active videos (frames, sampled frames, elapsed, ETA)
+
 Pipeline resilience settings:
 - pipeline.continue_on_video_error
 - pipeline.video_open_retries
@@ -235,3 +243,4 @@ When `processing.compute_spatial_grid=true`, the pipeline additionally computes 
 - For this reason, sampled_frames can be greater than motility.count.
 - Se analytics.enabled=true ma matplotlib/plotly non sono disponibili, la pipeline continua e logga warning/error sui plot mancanti.
 - Se spatial_grid=false, i record JSONL non includeranno dati spaziali e le heatmap non verranno generate.
+- In multiprocess mode, progress snapshots are throttled by logging.multi_video_progress_seconds to avoid terminal spam.

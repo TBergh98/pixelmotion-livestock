@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 from .checkpointing import (
@@ -68,6 +71,183 @@ class VideoJob:
     recording_date: str | None
 
 
+def _format_hms(total_seconds: float) -> str:
+    safe_seconds = max(int(total_seconds), 0)
+    return time.strftime("%H:%M:%S", time.gmtime(safe_seconds))
+
+
+def _build_progress_event(
+    *,
+    event_type: str,
+    job: VideoJob,
+    frames_processed: int,
+    frame_count: int | None,
+    sampled_total: int,
+    elapsed_seconds: float,
+    error: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "event_type": event_type,
+        "order_index": job.order_index,
+        "video_name": job.video_path.name,
+        "frames_processed": int(max(frames_processed, 0)),
+        "frame_count": int(frame_count) if isinstance(frame_count, int) else None,
+        "sampled_total": int(max(sampled_total, 0)),
+        "elapsed_seconds": float(max(elapsed_seconds, 0.0)),
+        "error": error,
+    }
+
+
+def _emit_progress_event(progress_queue: Any | None, event: dict[str, Any]) -> None:
+    if progress_queue is None:
+        return
+
+    try:
+        progress_queue.put(event)
+    except Exception:
+        LOGGER.debug("Progress queue unavailable; skipping event emission.", exc_info=True)
+
+
+def _log_multi_video_progress_snapshot(
+    *,
+    states: dict[int, dict[str, Any]],
+    total_jobs: int,
+    monitor_start: float,
+) -> None:
+    if total_jobs <= 0:
+        return
+
+    completed = sum(1 for state in states.values() if state.get("status") == "completed")
+    failed = sum(1 for state in states.values() if state.get("status") == "failed")
+    active_states = [
+        state
+        for state in states.values()
+        if state.get("status") in {"started", "progress"}
+    ]
+
+    elapsed_total = max(time.monotonic() - monitor_start, 0.001)
+    known_totals = [
+        int(state.get("frame_count"))
+        for state in states.values()
+        if isinstance(state.get("frame_count"), int) and int(state.get("frame_count")) > 0
+    ]
+    frames_done = sum(int(state.get("frames_processed", 0)) for state in states.values())
+    frames_total = sum(known_totals)
+
+    if frames_total > 0 and frames_done > 0:
+        overall_percent = min((frames_done / frames_total) * 100.0, 100.0)
+        throughput = frames_done / elapsed_total
+        remaining = max(frames_total - frames_done, 0)
+        eta_text = _format_hms(remaining / throughput) if throughput > 0 else "n/a"
+        progress_text = f"{overall_percent:.1f}%"
+    else:
+        eta_text = "n/a"
+        progress_text = "n/a"
+
+    LOGGER.info(
+        "Run progress | completed=%d/%d | failed=%d | active=%d | frames=%d/%s | progress=%s | ETA %s",
+        completed,
+        total_jobs,
+        failed,
+        len(active_states),
+        frames_done,
+        str(frames_total) if frames_total > 0 else "unknown",
+        progress_text,
+        eta_text,
+    )
+
+    for state in sorted(active_states, key=lambda item: int(item.get("order_index", 0)))[:8]:
+        frame_count = state.get("frame_count")
+        frames_processed = int(state.get("frames_processed", 0))
+        elapsed_seconds = float(state.get("elapsed_seconds", 0.0))
+
+        if isinstance(frame_count, int) and frame_count > 0:
+            ratio = min(max(frames_processed / frame_count, 0.0), 1.0)
+            eta_seconds = (elapsed_seconds / ratio - elapsed_seconds) if ratio > 0 else 0.0
+            frame_text = f"{frames_processed}/{frame_count}"
+            percent_text = f"{ratio * 100:.1f}%"
+            eta_video = _format_hms(eta_seconds) if ratio > 0 else "n/a"
+        else:
+            frame_text = str(frames_processed)
+            percent_text = "n/a"
+            eta_video = "n/a"
+
+        LOGGER.info(
+            "Video progress | #%d %s | frames=%s | sampled=%d | elapsed=%s | %s | ETA %s",
+            int(state.get("order_index", 0)) + 1,
+            state.get("video_name", "unknown"),
+            frame_text,
+            int(state.get("sampled_total", 0)),
+            _format_hms(elapsed_seconds),
+            percent_text,
+            eta_video,
+        )
+
+
+def _monitor_multi_video_progress(
+    *,
+    progress_queue: Any,
+    total_jobs: int,
+    update_interval_seconds: float,
+    stop_event: threading.Event,
+) -> None:
+    states: dict[int, dict[str, Any]] = {}
+    monitor_start = time.monotonic()
+    next_update = monitor_start + update_interval_seconds
+
+    while True:
+        now = time.monotonic()
+        timeout = max(min(next_update - now, 0.5), 0.05)
+
+        try:
+            event = progress_queue.get(timeout=timeout)
+        except Empty:
+            event = None
+        except Exception:
+            event = None
+
+        if isinstance(event, dict):
+            order_index = int(event.get("order_index", -1))
+            if order_index >= 0:
+                current = states.get(order_index, {"order_index": order_index})
+                current.update(event)
+                current["status"] = str(event.get("event_type", "progress"))
+                states[order_index] = current
+
+        now = time.monotonic()
+        should_log = now >= next_update
+        if should_log:
+            _log_multi_video_progress_snapshot(
+                states=states,
+                total_jobs=total_jobs,
+                monitor_start=monitor_start,
+            )
+            next_update = now + update_interval_seconds
+
+        if stop_event.is_set():
+            try:
+                while True:
+                    event = progress_queue.get_nowait()
+                    if isinstance(event, dict):
+                        order_index = int(event.get("order_index", -1))
+                        if order_index >= 0:
+                            current = states.get(order_index, {"order_index": order_index})
+                            current.update(event)
+                            current["status"] = str(event.get("event_type", "progress"))
+                            states[order_index] = current
+            except Empty:
+                pass
+            except Exception:
+                pass
+
+            _log_multi_video_progress_snapshot(
+                states=states,
+                total_jobs=total_jobs,
+                monitor_start=monitor_start,
+            )
+            return
+
+
 class Sampler:
     def __init__(self, every_n_frames: int | None, every_n_seconds: float | None) -> None:
         self._every_n_frames = every_n_frames
@@ -120,25 +300,43 @@ def _resolve_worker_count(configured_workers: int, task_count: int, default_cap:
     return max(1, min(default_cap, task_count))
 
 
-def _process_video_job(config: AppConfig, job: VideoJob) -> tuple[int, dict[str, Any]]:
+def _process_video_job(config: AppConfig, job: VideoJob, progress_queue: Any | None = None) -> tuple[int, dict[str, Any]]:
     report = _process_video(
         video_path=job.video_path,
         output_file=job.output_file,
         config=config,
         group_id=job.group_id,
         recording_date=job.recording_date,
+        job=job,
+        progress_queue=progress_queue,
     )
     return job.order_index, report
 
 
-def _process_video_job_with_retry(config: AppConfig, job: VideoJob) -> tuple[int, dict[str, Any]]:
+def _process_video_job_with_retry(
+    config: AppConfig,
+    job: VideoJob,
+    progress_queue: Any | None = None,
+) -> tuple[int, dict[str, Any]]:
     max_attempts = 1 + max(0, config.pipeline.video_open_retries)
 
     for attempt in range(1, max_attempts + 1):
         try:
-            return _process_video_job(config=config, job=job)
+            return _process_video_job(config=config, job=job, progress_queue=progress_queue)
         except Exception as exc:
             if attempt >= max_attempts:
+                _emit_progress_event(
+                    progress_queue,
+                    _build_progress_event(
+                        event_type="failed",
+                        job=job,
+                        frames_processed=0,
+                        frame_count=None,
+                        sampled_total=0,
+                        elapsed_seconds=0.0,
+                        error=str(exc),
+                    ),
+                )
                 raise
 
             backoff_seconds = config.pipeline.retry_backoff_seconds * (2 ** (attempt - 1))
@@ -534,7 +732,15 @@ def _flush_segment(
     }
 
 
-def _process_video(video_path: Path, output_file: Path, config: AppConfig, group_id: str | None = None, recording_date: str | None = None) -> dict[str, Any]:
+def _process_video(
+    video_path: Path,
+    output_file: Path,
+    config: AppConfig,
+    group_id: str | None = None,
+    recording_date: str | None = None,
+    job: VideoJob | None = None,
+    progress_queue: Any | None = None,
+) -> dict[str, Any]:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     metadata = get_video_metadata(video_path, group_id=group_id, recording_date=recording_date)
     config_snapshot = build_config_snapshot(config)
@@ -639,6 +845,19 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
         metadata.duration_seconds,
     )
 
+    if job is not None:
+        _emit_progress_event(
+            progress_queue,
+            _build_progress_event(
+                event_type="started",
+                job=job,
+                frames_processed=0,
+                frame_count=metadata.frame_count if metadata.frame_count > 0 else None,
+                sampled_total=sampled_total,
+                elapsed_seconds=0.0,
+            ),
+        )
+
     def log_progress(force: bool = False) -> None:
         nonlocal last_progress_log_time
 
@@ -669,6 +888,19 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
             percent_text,
             eta_text,
         )
+
+        if job is not None:
+            _emit_progress_event(
+                progress_queue,
+                _build_progress_event(
+                    event_type="progress",
+                    job=job,
+                    frames_processed=frames_processed,
+                    frame_count=metadata.frame_count if metadata.frame_count > 0 else None,
+                    sampled_total=sampled_total,
+                    elapsed_seconds=elapsed_seconds,
+                ),
+            )
 
         last_progress_log_time = now
 
@@ -810,6 +1042,19 @@ def _process_video(video_path: Path, output_file: Path, config: AppConfig, group
         sampled_total / elapsed_seconds,
         output_file,
     )
+    if job is not None:
+        _emit_progress_event(
+            progress_queue,
+            _build_progress_event(
+                event_type="completed",
+                job=job,
+                frames_processed=frames_processed,
+                frame_count=metadata.frame_count if metadata.frame_count > 0 else None,
+                sampled_total=sampled_total,
+                elapsed_seconds=elapsed_seconds,
+            ),
+        )
+
     report = {
         "status": "completed",
         "video_name": video_path.name,
@@ -892,28 +1137,68 @@ def run_pipeline(config: AppConfig) -> None:
             default_cap=default_video_cap,
         )
 
+    progress_queue = None
+    progress_manager = None
+    progress_monitor_thread = None
+    progress_stop_event = None
+
     if video_workers > 1 and pending_jobs:
         LOGGER.info("Processing %d video(s) with %d worker processes.", len(pending_jobs), video_workers)
-        with ProcessPoolExecutor(max_workers=video_workers) as executor:
-            future_by_job = {
-                executor.submit(_process_video_job_with_retry, config, job): job
-                for job in pending_jobs
-            }
-            for future in as_completed(future_by_job):
-                job = future_by_job[future]
-                try:
-                    order_index, report = future.result()
-                    ordered_reports[order_index] = report
-                except Exception as exc:
-                    if not config.pipeline.continue_on_video_error:
-                        raise
+        progress_manager = multiprocessing.Manager()
+        progress_queue = progress_manager.Queue()
+        progress_stop_event = threading.Event()
+        progress_monitor_thread = threading.Thread(
+            target=_monitor_multi_video_progress,
+            kwargs={
+                "progress_queue": progress_queue,
+                "total_jobs": len(pending_jobs),
+                "update_interval_seconds": float(config.logging.multi_video_progress_seconds),
+                "stop_event": progress_stop_event,
+            },
+            daemon=True,
+        )
+        progress_monitor_thread.start()
 
-                    LOGGER.exception("Video processing failed for %s", job.video_path)
-                    ordered_reports[job.order_index] = _build_failed_video_report(
-                        job=job,
-                        exc=exc,
-                        attempts=1 + max(0, config.pipeline.video_open_retries),
-                    )
+        try:
+            with ProcessPoolExecutor(max_workers=video_workers) as executor:
+                future_by_job = {
+                    executor.submit(_process_video_job_with_retry, config, job, progress_queue): job
+                    for job in pending_jobs
+                }
+                for future in as_completed(future_by_job):
+                    job = future_by_job[future]
+                    try:
+                        order_index, report = future.result()
+                        ordered_reports[order_index] = report
+                    except Exception as exc:
+                        if not config.pipeline.continue_on_video_error:
+                            raise
+
+                        _emit_progress_event(
+                            progress_queue,
+                            _build_progress_event(
+                                event_type="failed",
+                                job=job,
+                                frames_processed=0,
+                                frame_count=None,
+                                sampled_total=0,
+                                elapsed_seconds=0.0,
+                                error=str(exc),
+                            ),
+                        )
+                        LOGGER.exception("Video processing failed for %s", job.video_path)
+                        ordered_reports[job.order_index] = _build_failed_video_report(
+                            job=job,
+                            exc=exc,
+                            attempts=1 + max(0, config.pipeline.video_open_retries),
+                        )
+        finally:
+            if progress_stop_event is not None:
+                progress_stop_event.set()
+            if progress_monitor_thread is not None:
+                progress_monitor_thread.join(timeout=2.0)
+            if progress_manager is not None:
+                progress_manager.shutdown()
     else:
         for job in pending_jobs:
             try:
